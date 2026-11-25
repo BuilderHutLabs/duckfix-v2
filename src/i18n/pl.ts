@@ -198,6 +198,8 @@ export const pl = {
   sweepNoReceipt: 'Nie widzę paragonu — połóż go na ciemniejszym tle',
   sweepFull: 'Paragon jest bardzo długi — zakończyłem nagrywanie',
   sweepStop: 'Zakończ paragon',
+  sweepEnd: 'Koniec paragonu? Naciśnij Zakończ',
+  sweepFailed: 'Nie udało się złożyć paragonu — spróbuj jeszcze raz',
   cardFront: 'Przód dowodu lub karty (1/2)',
   cardBack: 'Teraz tył (2/2)',
   cropCardFront: 'Przód karty',

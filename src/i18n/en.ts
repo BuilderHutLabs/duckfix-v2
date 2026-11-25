@@ -191,6 +191,8 @@ export const en: Strings = {
   sweepNoReceipt: 'No receipt in view — put it on a darker surface',
   sweepFull: 'The receipt is very long — recording stopped',
   sweepStop: 'Finish the receipt',
+  sweepEnd: 'End of the receipt? Press Finish',
+  sweepFailed: 'Could not put the receipt together — please try again',
   cardFront: 'Front of the ID or card (1/2)',
   cardBack: 'Now the back (2/2)',
   cropCardFront: 'Front of the card',

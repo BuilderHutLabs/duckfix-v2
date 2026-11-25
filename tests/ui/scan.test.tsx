@@ -36,7 +36,14 @@ const fullSheet = {
 
 // "Paragon": what the sweep sees and decides, set by each test (the real sums are tested in tests/scan)
 const sweepCtl = vi.hoisted(() => ({
-  strip: { topL: 60, topR: 180, botL: 60, botR: 180 } as null | { topL: number; topR: number; botL: number; botR: number },
+  strip: { topL: 60, topR: 180, botL: 60, botR: 180, y0: 0, y1: 180 } as null | {
+    topL: number;
+    topR: number;
+    botL: number;
+    botR: number;
+    y0: number;
+    y1: number;
+  },
   light: 150,
   out: { pos: 0, state: 'moving' as 'moving' | 'fast' | 'lost' | 'blank', capture: false },
   /** Each push keeps a frame (for the "too many frames" case). */
@@ -45,7 +52,7 @@ const sweepCtl = vi.hoisted(() => ({
 }));
 vi.mock('../../src/scan/sweepFrame', () => ({
   grabGray: vi.fn(() => ({ gray: new Uint8ClampedArray(240 * 180), w: 240, h: 180, light: sweepCtl.light })),
-  cutKey: vi.fn(async () => ({ blob: new Blob(['key'], { type: 'image/jpeg' }), thumb: 'data:image/jpeg;base64,key' })),
+  cutKey: vi.fn(async () => ({ blob: new Blob(['key'], { type: 'image/jpeg' }), thumb: 'data:image/jpeg;base64,key', width: 1200 })),
   composeSweep: vi.fn(async () => new Blob(['receipt'], { type: 'image/jpeg' })),
 }));
 vi.mock('../../src/scan/sweep', async (orig) => ({
@@ -478,7 +485,7 @@ describe('built-in camera', () => {
 
   describe('"Paragon": the receipt is filmed while the phone moves', () => {
     beforeEach(() => {
-      sweepCtl.strip = { topL: 60, topR: 180, botL: 60, botR: 180 };
+      sweepCtl.strip = { topL: 60, topR: 180, botL: 60, botR: 180, y0: 0, y1: 180 };
       sweepCtl.light = 150;
       sweepCtl.out = { pos: 0, state: 'moving', capture: false };
       sweepCtl.alwaysKeep = false;
@@ -565,6 +572,77 @@ describe('built-in camera', () => {
       await act(async () => fireEvent.click(screen.getByRole('button', { name: strings.cropAddAll })));
       await waitFor(() => expect(deps.importFiles).toHaveBeenCalledTimes(2));
       expect(vi.mocked(warp.warpToBlob).mock.calls[1][1]).toEqual(fullQuad(4000, 3000));
+    });
+
+    it('Stop takes the bottom frame from a fresh look at that moment (its own edges), not from a look before', async () => {
+      const sf = await import('../../src/scan/sweepFrame');
+      await openReceipt();
+      await act(async () => fireEvent.click(shutter()));
+      await waitFor(() => expect(sweepCtl.pushes).toBeGreaterThan(1));
+      vi.mocked(sf.cutKey).mockClear();
+      const now = { topL: 62, topR: 182, botL: 62, botR: 182, y0: 0, y1: 120 }; // the receipt's end has come up into view
+      sweepCtl.strip = now;
+      sweepCtl.out = { pos: 40, state: 'moving', capture: false };
+      await act(async () => fireEvent.click(shutter()));
+      expect(vi.mocked(sf.cutKey)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(sf.cutKey).mock.calls[0][1]).toBe(now);
+    });
+
+    it('Stop while lost: no bottom frame is guessed', async () => {
+      const sf = await import('../../src/scan/sweepFrame');
+      await openReceipt();
+      await act(async () => fireEvent.click(shutter()));
+      await waitFor(() => expect(sweepCtl.pushes).toBeGreaterThan(1));
+      sweepCtl.out = { pos: 20, state: 'moving', capture: false };
+      let n = sweepCtl.pushes;
+      await waitFor(() => expect(sweepCtl.pushes).toBeGreaterThan(n));
+      sweepCtl.out = { pos: 40, state: 'lost', capture: false }; // the last looks were lost
+      n = sweepCtl.pushes;
+      await waitFor(() => expect(sweepCtl.pushes).toBeGreaterThan(n + 1));
+      vi.mocked(sf.cutKey).mockClear();
+      await act(async () => fireEvent.click(shutter()));
+      expect(vi.mocked(sf.cutKey)).not.toHaveBeenCalled();
+    });
+
+    it('the receipt’s end in view while filming: "press Stop"', async () => {
+      await openReceipt();
+      await act(async () => fireEvent.click(shutter()));
+      sweepCtl.out = { pos: 40, state: 'moving', capture: false };
+      sweepCtl.strip = { topL: 60, topR: 180, botL: 60, botR: 180, y0: 0, y1: 100 };
+      expect(await screen.findByText(strings.sweepEnd)).toBeTruthy();
+    });
+
+    it('putting the receipt together fails: it says so, and no empty photo is left', async () => {
+      const sf = await import('../../src/scan/sweepFrame');
+      vi.mocked(sf.composeSweep).mockRejectedValueOnce(new Error('too big'));
+      await openReceipt();
+      await act(async () => fireEvent.click(shutter()));
+      await waitFor(() => expect(sweepCtl.pushes).toBeGreaterThan(1));
+      await act(async () => fireEvent.click(shutter()));
+      expect(await screen.findByText(strings.sweepFailed)).toBeTruthy();
+      await waitFor(() => expect(screen.queryByRole('button', { name: strings.cameraDone(1) })).toBeNull());
+    });
+
+    it('a long receipt keeps its full size through the crop screen (not shrunk to 2400 px on its long side)', async () => {
+      const warp = await import('../../src/scan/warp');
+      vi.mocked(warp.loadPhoto).mockImplementation(
+        async () => ({ width: 1240, height: 7800, url: 'blob:long', bitmap: {}, close: vi.fn() }) as never,
+      );
+      const deps = await openReceipt();
+      await act(async () => fireEvent.click(shutter()));
+      await waitFor(() => expect(sweepCtl.pushes).toBeGreaterThan(1));
+      await act(async () => fireEvent.click(shutter()));
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: strings.cameraDone(1) })));
+      await screen.findByRole('dialog', { name: strings.cropTitle });
+      vi.mocked(warp.warpToBlob).mockClear();
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: strings.cropDone })));
+      await waitFor(() => expect(deps.importFiles).toHaveBeenCalledTimes(1));
+      const call = vi.mocked(warp.warpToBlob).mock.calls[0];
+      expect(call[3]).toBeGreaterThanOrEqual(7800);
+      expect(call[4]).toBeGreaterThanOrEqual(7800);
+      vi.mocked(warp.loadPhoto).mockImplementation(
+        async () => ({ width: 4000, height: 3000, url: 'blob:photo', bitmap: {}, close: vi.fn() }) as never,
+      );
     });
 
     it('the modes cannot be changed while filming', async () => {

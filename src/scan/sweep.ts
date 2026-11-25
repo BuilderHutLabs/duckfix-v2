@@ -174,13 +174,11 @@ export function findStrip(gray: Uint8ClampedArray, w: number, h: number): Strip 
  * full picture) and brought to `outW` columns; rows are scaled by the same factor, so a "row of the
  * strip" is the same share of the receipt's width whatever the phone's distance.
  */
-export function unwarpStrip(
-  gray: Uint8ClampedArray,
-  w: number,
-  h: number,
-  s: Strip,
-  outW = STRIP_W,
-): { data: Uint8ClampedArray; w: number; h: number } {
+/**
+ * Where the upright receipt lies in a frame `h` rows tall (in its pixels): its lean, its middle line
+ * at the frame's middle row, its width across the paper, and its top and end along the middle line.
+ */
+export function stripGeometry(s: Strip, h: number) {
   const tilt = stripTilt(s, h);
   const cos = Math.cos(tilt);
   const sin = Math.sin(tilt);
@@ -189,11 +187,21 @@ export function unwarpStrip(
   const cx = (at(s.topL, s.botL, yc) + at(s.topR, s.botR, yc)) / 2;
   // across the paper (perpendicular to its edges) it is narrower than across the frame
   const paperW = (at(s.topR, s.botR, yc) - at(s.topL, s.botL, yc)) * cos || 1;
+  return { tilt, cos, sin, yc, cx, paperW, t0: (s.y0 - yc) / cos, t1: (s.y1 - yc) / cos };
+}
+
+export function unwarpStrip(
+  gray: Uint8ClampedArray,
+  w: number,
+  h: number,
+  s: Strip,
+  outW = STRIP_W,
+): { data: Uint8ClampedArray; w: number; h: number } {
+  const { cos, sin, yc, cx, paperW, t0, t1 } = stripGeometry(s, h);
   const k = outW / paperW;
-  const outH = Math.max(1, Math.round(((s.y1 - s.y0) / cos) * k));
+  const outH = Math.max(1, Math.round((t1 - t0) * k));
   const data = new Uint8ClampedArray(outW * outH);
   // down the receipt: (-sin, cos); across it: (cos, sin); the strip's top is where the middle line meets row y0
-  const t0 = (s.y0 - yc) / cos;
   for (let j = 0; j < outH; j++) {
     const t = t0 + (j + 0.5) / k;
     const mx = cx - t * sin;

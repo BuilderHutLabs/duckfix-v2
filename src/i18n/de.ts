@@ -191,6 +191,8 @@ export const de: Strings = {
   sweepNoReceipt: 'Kein Kassenbon zu sehen — auf eine dunklere Fläche legen',
   sweepFull: 'Der Kassenbon ist sehr lang — Aufnahme beendet',
   sweepStop: 'Kassenbon beenden',
+  sweepEnd: 'Ende des Kassenbons? Auf Beenden drücken',
+  sweepFailed: 'Der Kassenbon konnte nicht zusammengesetzt werden — bitte erneut versuchen',
   cardFront: 'Vorderseite des Ausweises oder der Karte (1/2)',
   cardBack: 'Jetzt die Rückseite (2/2)',
   cropCardFront: 'Vorderseite',

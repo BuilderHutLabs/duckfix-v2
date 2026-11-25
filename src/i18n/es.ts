@@ -191,6 +191,8 @@ export const es: Strings = {
   sweepNoReceipt: 'No veo el recibo — ponlo sobre una superficie más oscura',
   sweepFull: 'El recibo es muy largo — grabación terminada',
   sweepStop: 'Terminar el recibo',
+  sweepEnd: '¿Final del recibo? Pulsa Terminar',
+  sweepFailed: 'No se pudo componer el recibo — inténtalo de nuevo',
   cardFront: 'Parte delantera del DNI o tarjeta (1/2)',
   cardBack: 'Ahora la parte trasera (2/2)',
   cropCardFront: 'Parte delantera',

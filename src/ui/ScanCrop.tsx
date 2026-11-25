@@ -22,6 +22,16 @@ function loadFilter(): CropFilter {
 /** The look a photo is straightened with: "Auto" on a card side is always colour. */
 const lookFor = (f: CropFilter, card: boolean): ScanLook => (f === 'auto' && card ? 'auto-card' : f);
 
+/**
+ * Size limits of the straightened page (long side, and the copy it is read from). A long, narrow
+ * picture (a filmed receipt) keeps its full size: shrunk to the usual 2400 px on its long side it
+ * would be too narrow to read.
+ */
+function sidesFor(p: { width: number; height: number }): [number, number] | [] {
+  const long = Math.max(p.width, p.height);
+  return long > 2 * Math.min(p.width, p.height) ? [Math.max(2400, long), Math.max(3200, long)] : [];
+}
+
 function saveFilter(f: CropFilter): void {
   try {
     localStorage.setItem(FILTER_KEY, f);
@@ -166,7 +176,7 @@ export function ScanCrop({ file }: { file: File }) {
     const q = quad;
     const card = isCard;
     queueWarp(() =>
-      warpToBlob(p, q, lookFor(filter, card))
+      warpToBlob(p, q, lookFor(filter, card), ...sidesFor(p))
         .then((blob) => (card ? void cardSides.push(blob) : s.addScan(blob, at)))
         .catch(() => s.showError(strings.genericError))
         .finally(() => p.close()),
@@ -212,7 +222,7 @@ export function ScanCrop({ file }: { file: File }) {
         try {
           // a photo cut already (taken by hand, a filmed receipt) is kept whole, as on its own crop screen
           const q = takenByHand.has(f) ? fullQuad(p.width, p.height) : (findSheet(p) ?? defaultQuad(p.width, p.height));
-          const blob = await warpToBlob(p, q, lookFor(filter, card));
+          const blob = await warpToBlob(p, q, lookFor(filter, card), ...sidesFor(p));
           if (card) cardSides.push(blob);
           else await s.addScan(blob, at);
         } finally {

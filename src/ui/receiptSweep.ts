@@ -1,15 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
-import {
-  createSweep,
-  findStrip,
-  layoutSweep,
-  rowFeatures,
-  stripEdges,
-  unwarpStrip,
-  type Strip,
-  type SweepKey,
-  type SweepState,
-} from '../scan/sweep';
+import { createSweep, findStrip, layoutSweep, rowFeatures, stripEdges, unwarpStrip, type SweepKey, type SweepState } from '../scan/sweep';
 import { composeSweep, cutKey, grabGray } from '../scan/sweepFrame';
 import type { Pt } from '../scan/quad';
 import { quadToView } from '../scan/liveScan';
@@ -29,11 +19,18 @@ export function sweepDelay(ms: number): number {
   return Math.round(Math.min(250, Math.max(60, ms * 2)));
 }
 
-/** The JPEG of a kept frame; a failure is handled where the frames are put together. */
-function blobOf(cut: Promise<{ blob: Blob }>): Promise<Blob> {
-  const b = cut.then((c) => c.blob);
-  b.catch(() => {});
-  return b;
+/** A kept frame being cut; a failure is handled where the frames are put together. */
+function quiet<T>(p: Promise<T>): Promise<T> {
+  p.catch(() => {});
+  return p;
+}
+
+function safeGrab(v: HTMLVideoElement, canvas: HTMLCanvasElement, side: number): ReturnType<typeof grabGray> {
+  try {
+    return grabGray(v, canvas, side);
+  } catch {
+    return null;
+  }
 }
 
 /** A receipt finished: the put-together picture (written in the background) and a small picture of it. */
@@ -56,13 +53,15 @@ export function useReceiptSweep(video: RefObject<HTMLVideoElement>, enabled: boo
   const rec = useRef<{
     sweep: ReturnType<typeof createSweep>;
     keys: SweepKey[];
-    blobs: Promise<Blob>[];
+    cuts: Promise<{ blob: Blob; width: number }>[];
     thumbs: string[];
-    last: { strip: Strip; w: number; key: SweepKey } | null;
     state: SweepState;
   } | null>(null);
   const finishedRef = useRef(onFinished);
   finishedRef.current = onFinished;
+
+  /** The small canvas the looks are drawn on (also used by the last look at "Stop"). */
+  const lookCanvas = useRef<HTMLCanvasElement | null>(null);
 
   /** Ends the recording; the kept frames are put together in the background. */
   const stop = () => {
@@ -71,22 +70,33 @@ export function useReceiptSweep(video: RefObject<HTMLVideoElement>, enabled: boo
     rec.current = null;
     setRecording(false);
     setThumbs([]);
+    // the bottom of the receipt: one more look right now, kept when it is followed well and shows more
+    // (never a frame from an earlier look: the phone has moved since)
     const v = video.current;
-    // the frame seen last is the bottom of the receipt: kept too, unless it is (almost) the last kept one
     const lastKept = r.keys.at(-1);
-    if (r.last && v && lastKept && r.last.key.pos - lastKept.pos > 2) {
-      r.keys.push(r.last.key);
-      const cut = cutKey(v, r.last.strip, r.last.w);
-      r.blobs.push(blobOf(cut));
-      void cut.then((c) => r.thumbs.push(c.thumb)).catch(() => {});
+    const g = v && lookCanvas.current ? safeGrab(v, lookCanvas.current, isWeakDevice() ? GRAB_W_WEAK : GRAB_W) : null;
+    const strip = g ? findStrip(g.gray, g.w, g.h) : null;
+    if (v && g && strip && lastKept) {
+      const u = unwarpStrip(g.gray, g.w, g.h, strip);
+      const feats = rowFeatures(u.data, u.w, u.h);
+      const out = r.sweep.push(feats);
+      if ((out.state === 'moving' || out.state === 'fast') && out.pos - lastKept.pos > 2) {
+        r.keys.push({ pos: out.pos, rows: u.h, feats });
+        const cut = cutKey(v, strip, g.w);
+        r.cuts.push(quiet(cut));
+        void cut.then((c) => r.thumbs.push(c.thumb)).catch(() => {});
+      }
     }
     const thumb = r.thumbs.at(-1) ?? '';
     const file = !r.keys.length
       ? Promise.resolve(null)
-      : Promise.all(r.blobs)
-          .then((blobs) => composeSweep(blobs, layoutSweep(r.keys)))
+      : Promise.all(r.cuts)
+          .then((cuts) => composeSweep(cuts, layoutSweep(r.keys)))
           .then((b) => new File([b], `paragon-${Date.now()}.jpg`, { type: 'image/jpeg', lastModified: Date.now() }))
-          .catch(() => null);
+          .catch(() => {
+            setNotice(strings.sweepFailed);
+            return null;
+          });
     finishedRef.current({ file, thumb });
   };
   const stopRef = useRef(stop);
@@ -94,14 +104,14 @@ export function useReceiptSweep(video: RefObject<HTMLVideoElement>, enabled: boo
 
   const start = () => {
     if (rec.current) return;
-    rec.current = { sweep: createSweep(), keys: [], blobs: [], thumbs: [], last: null, state: 'moving' };
+    rec.current = { sweep: createSweep(), keys: [], cuts: [], thumbs: [], state: 'moving' };
     setRecording(true);
     setSeconds(0);
     setThumbs([]);
     setNotice('');
   };
 
-  // "too long, stopped" stays a few seconds
+  // "too long, stopped" or "could not put it together" stays a few seconds
   useEffect(() => {
     if (!notice) return;
     const t = setTimeout(() => setNotice(''), 4000);
@@ -128,6 +138,7 @@ export function useReceiptSweep(video: RefObject<HTMLVideoElement>, enabled: boo
   useEffect(() => {
     if (!enabled) return;
     const canvas = document.createElement('canvas');
+    lookCanvas.current = canvas;
     const side = isWeakDevice() ? GRAB_W_WEAK : GRAB_W;
     let alive = true;
     let t: ReturnType<typeof setTimeout> | undefined;
@@ -143,12 +154,7 @@ export function useReceiptSweep(video: RefObject<HTMLVideoElement>, enabled: boo
     const look = () => {
       const v = video.current;
       if (!v) return;
-      let g: ReturnType<typeof grabGray> = null;
-      try {
-        g = grabGray(v, canvas, side);
-      } catch {
-        return;
-      }
+      const g = safeGrab(v, canvas, side);
       if (!g) return;
       const strip = findStrip(g.gray, g.w, g.h);
       setEdges(strip ? quadToView(stripEdges(strip, g.h), g.w, g.h, v.clientWidth, v.clientHeight) : null);
@@ -162,15 +168,16 @@ export function useReceiptSweep(video: RefObject<HTMLVideoElement>, enabled: boo
       if (out.state === 'fast' && r.state !== 'fast') navigator.vibrate?.(30);
       r.state = out.state;
       const key = { pos: out.pos, rows: u.h, feats };
-      r.last = { strip, w: g.w, key };
       if (out.state === 'fast') say(strings.sweepFast, true);
       else if (out.state === 'lost') say(strings.sweepLost, true);
+      else if (strip.y1 < g.h * 0.85)
+        say(strings.sweepEnd); // the receipt's end is in view
       else say(strings.sweepMove);
       if (!out.capture) return;
       r.sweep.captured(feats);
       r.keys.push(key);
       const cut = cutKey(v, strip, g.w);
-      r.blobs.push(blobOf(cut));
+      r.cuts.push(quiet(cut));
       void cut
         .then((c) => {
           r.thumbs.push(c.thumb);
@@ -187,6 +194,7 @@ export function useReceiptSweep(video: RefObject<HTMLVideoElement>, enabled: boo
       alive = false;
       clearTimeout(t);
       canvas.width = 0;
+      if (lookCanvas.current === canvas) lookCanvas.current = null;
     };
   }, [enabled, video]);
 

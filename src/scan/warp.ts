@@ -122,11 +122,20 @@ export function findSheet(photo: Photo): Quad | null {
   }
 }
 
-/** Straightens the sheet inside `q` (photo pixels) into an upright JPEG. */
-export async function warpToBlob(photo: Photo, q: Quad, filter: ScanLook = 'whiten', maxSide = 2400): Promise<Blob> {
+/**
+ * Straightens the sheet inside `q` (photo pixels) into an upright JPEG, at most `maxSide` px on its
+ * long side, sampled from a copy at most `sourceSide` px (both within the canvas budget).
+ */
+export async function warpToBlob(
+  photo: Photo,
+  q: Quad,
+  filter: ScanLook = 'whiten',
+  maxSide = 2400,
+  sourceSide = SOURCE_SIDE,
+): Promise<Blob> {
   const { w, h } = warpSize(q, maxSide);
   // sample from a copy no larger than needed (and within the canvas budget)
-  const k = Math.min(1, SOURCE_SIDE / Math.max(photo.width, photo.height), Math.sqrt(MAX_CANVAS_PIXELS / 2 / (photo.width * photo.height)));
+  const k = Math.min(1, sourceSide / Math.max(photo.width, photo.height), Math.sqrt(MAX_CANVAS_PIXELS / 2 / (photo.width * photo.height)));
   const sw = Math.max(1, Math.round(photo.width * k));
   const sh = Math.max(1, Math.round(photo.height * k));
   const src = canvas(sw, sh);
