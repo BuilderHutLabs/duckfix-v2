@@ -191,8 +191,6 @@ export const de: Strings = {
   sweepNoReceipt: 'Kein Kassenbon zu sehen — auf eine dunklere Fläche legen',
   sweepFull: 'Der Kassenbon ist sehr lang — Aufnahme beendet',
   sweepStop: 'Kassenbon beenden',
-  receiptStep: (n: number) => (n === 1 ? 'Kassenbon: den oberen Teil fotografieren' : `Teil ${n}: weiter nach unten, etwas überlappend`),
-  cropReceiptPart: (n: number, of: number) => `Kassenbon – Teil ${n}/${of}`,
   cardFront: 'Vorderseite des Ausweises oder der Karte (1/2)',
   cardBack: 'Jetzt die Rückseite (2/2)',
   cropCardFront: 'Vorderseite',

@@ -191,8 +191,6 @@ export const en: Strings = {
   sweepNoReceipt: 'No receipt in view — put it on a darker surface',
   sweepFull: 'The receipt is very long — recording stopped',
   sweepStop: 'Finish the receipt',
-  receiptStep: (n: number) => (n === 1 ? 'Receipt: photograph the top part' : `Part ${n}: move down, with a little overlap`),
-  cropReceiptPart: (n: number, of: number) => `Receipt – part ${n}/${of}`,
   cardFront: 'Front of the ID or card (1/2)',
   cardBack: 'Now the back (2/2)',
   cropCardFront: 'Front of the card',

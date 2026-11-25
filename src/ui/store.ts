@@ -84,8 +84,6 @@ export interface AppState {
   scanTotal: number;
   /** Photos of the round that are the front and back of a card ("Dowód"): together they become one page. */
   scanCardFiles: File[];
-  /** Photos of the round that are parts of one long receipt ("Paragon"), top first. */
-  scanReceiptFiles: File[];
   /** Pages the "Wygląd stron" sheet applies to (open while set). */
   filterSheetIds: string[] | null;
   /** Where the cropped photo goes: a page index, or null for the end / a new document. */
@@ -296,7 +294,6 @@ export function createAppStore(overrides: Partial<StoreDeps> = {}) {
     scanQueue: [],
     scanTotal: 0,
     scanCardFiles: [],
-    scanReceiptFiles: [],
     filterSheetIds: null,
     scanIndex: null,
     exportOptions: loadExportOptions(deps.storage),
@@ -633,11 +630,11 @@ export function createAppStore(overrides: Partial<StoreDeps> = {}) {
     },
 
     setScanPhoto(file: File | null, index: number | null = null) {
-      set({ scanPhoto: file, scanIndex: file ? index : null, scanQueue: [], scanTotal: file ? 1 : 0, scanCardFiles: [], scanReceiptFiles: [] });
+      set({ scanPhoto: file, scanIndex: file ? index : null, scanQueue: [], scanTotal: file ? 1 : 0, scanCardFiles: [] });
     },
 
     /** Several camera photos go through the crop screen one after another. */
-    setScanPhotos(files: File[], index: number | null = null, cardFiles: File[] = [], receiptFiles: File[] = []) {
+    setScanPhotos(files: File[], index: number | null = null, cardFiles: File[] = []) {
       if (!files.length) return actions.setScanPhoto(null);
       set({
         scanPhoto: files[0],
@@ -645,7 +642,6 @@ export function createAppStore(overrides: Partial<StoreDeps> = {}) {
         scanTotal: files.length,
         scanIndex: index,
         scanCardFiles: cardFiles,
-        scanReceiptFiles: receiptFiles,
       });
     },
 
@@ -921,7 +917,8 @@ export function createAppStore(overrides: Partial<StoreDeps> = {}) {
             set({
               busy: null,
               exportProgress: null,
-              notice: strings.savedNotice(saved.length === 1 ? saved[0].name : `${base} (${saved.length})`, formatSize(bytes)) + tooBig(bytes),
+              notice:
+                strings.savedNotice(saved.length === 1 ? saved[0].name : `${base} (${saved.length})`, formatSize(bytes)) + tooBig(bytes),
             });
           }
           return;
@@ -968,7 +965,11 @@ export function createAppStore(overrides: Partial<StoreDeps> = {}) {
           const done = downloadAll(files);
           const size = formatSize(files.reduce((n, f) => n + f.size, 0));
           const saved = strings.savedNotice(done.length === 1 ? done[0].name : `${base} (${done.length})`, size);
-          set({ busy: null, exportProgress: null, notice: [saved, over, ocrFailed ? strings.ocrUnavailable : ''].filter(Boolean).join(' ') });
+          set({
+            busy: null,
+            exportProgress: null,
+            notice: [saved, over, ocrFailed ? strings.ocrUnavailable : ''].filter(Boolean).join(' '),
+          });
         }
       } catch (e) {
         if (own !== session) return;

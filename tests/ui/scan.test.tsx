@@ -34,11 +34,6 @@ const fullSheet = {
   light: 150,
 };
 
-vi.mock('../../src/scan/receipt', async (orig) => ({
-  ...(await orig<typeof import('../../src/scan/receipt')>()),
-  composeReceipt: vi.fn(async () => new Blob(['long'], { type: 'image/jpeg' })),
-}));
-
 // "Paragon": what the sweep sees and decides, set by each test (the real sums are tested in tests/scan)
 const sweepCtl = vi.hoisted(() => ({
   strip: { topL: 60, topR: 180, botL: 60, botR: 180 } as null | { topL: number; topR: number; botL: number; botR: number },
@@ -553,6 +548,23 @@ describe('built-in camera', () => {
       await waitFor(() => expect(sweepCtl.pushes).toBeGreaterThan(1));
       await act(async () => fireEvent.click(screen.getByRole('button', { name: strings.cameraDone(1) })));
       expect(await screen.findByRole('dialog', { name: strings.cropTitle })).toBeTruthy();
+    });
+
+    it('"Dodaj wszystkie" with a filmed receipt waiting: the receipt is kept whole, not cut like a sheet', async () => {
+      const warp = await import('../../src/scan/warp');
+      const { fullQuad } = await import('../../src/scan/quad');
+      const deps = await openLive();
+      await shoot(); // an ordinary page first
+      fireEvent.click(screen.getByRole('button', { name: strings.modeReceipt }));
+      await act(async () => fireEvent.click(shutter()));
+      await waitFor(() => expect(sweepCtl.pushes).toBeGreaterThan(1));
+      await act(async () => fireEvent.click(shutter()));
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: strings.cameraDone(2) })));
+      await screen.findByRole('dialog', { name: strings.cropTitle });
+      vi.mocked(warp.warpToBlob).mockClear();
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: strings.cropAddAll })));
+      await waitFor(() => expect(deps.importFiles).toHaveBeenCalledTimes(2));
+      expect(vi.mocked(warp.warpToBlob).mock.calls[1][1]).toEqual(fullQuad(4000, 3000));
     });
 
     it('the modes cannot be changed while filming', async () => {

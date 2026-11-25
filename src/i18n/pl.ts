@@ -198,8 +198,6 @@ export const pl = {
   sweepNoReceipt: 'Nie widzę paragonu — połóż go na ciemniejszym tle',
   sweepFull: 'Paragon jest bardzo długi — zakończyłem nagrywanie',
   sweepStop: 'Zakończ paragon',
-  receiptStep: (n: number) => (n === 1 ? 'Paragon: zrób zdjęcie górnej części' : `Część ${n}: przesuń niżej, z małym zakładem`),
-  cropReceiptPart: (n: number, of: number) => `Paragon – część ${n}/${of}`,
   cardFront: 'Przód dowodu lub karty (1/2)',
   cardBack: 'Teraz tył (2/2)',
   cropCardFront: 'Przód karty',

@@ -191,8 +191,6 @@ export const es: Strings = {
   sweepNoReceipt: 'No veo el recibo — ponlo sobre una superficie más oscura',
   sweepFull: 'El recibo es muy largo — grabación terminada',
   sweepStop: 'Terminar el recibo',
-  receiptStep: (n: number) => (n === 1 ? 'Tique: fotografía la parte de arriba' : `Parte ${n}: baja un poco, solapando algo`),
-  cropReceiptPart: (n: number, of: number) => `Tique – parte ${n}/${of}`,
   cardFront: 'Parte delantera del DNI o tarjeta (1/2)',
   cardBack: 'Ahora la parte trasera (2/2)',
   cropCardFront: 'Parte delantera',

@@ -87,9 +87,9 @@ export function CameraInput() {
       {open && (
         <LiveCamera
           onClose={() => setLiveOpen(false)}
-          onDone={(files, cardFiles, receiptFiles) => {
+          onDone={(files, cardFiles) => {
             setLiveOpen(false);
-            setScanPhotos(files, null, cardFiles, receiptFiles);
+            setScanPhotos(files, null, cardFiles);
           }}
           onPhoneCamera={() => {
             setLiveOpen(false);
@@ -177,8 +177,6 @@ interface Shot {
   id: number;
   url: string;
   card: boolean;
-  /** A part of a long receipt ("Paragon"). */
-  receipt: boolean;
   file: Promise<File | null>;
   saved: boolean;
 }
@@ -215,7 +213,7 @@ export function LiveCamera({
 }: {
   onClose(): void;
   /** `cardFiles`: the photos that are the front and back of a card (one page together). */
-  onDone(files: File[], cardFiles?: File[], receiptFiles?: File[]): void;
+  onDone(files: File[], cardFiles?: File[]): void;
   onPhoneCamera(): void;
 }) {
   const video = useRef<HTMLVideoElement>(null);
@@ -321,7 +319,6 @@ export function LiveCamera({
       id: ++shotIds,
       url: thumbnail(canvas),
       card: modeRef.current === 'card',
-      receipt: modeRef.current === 'receipt',
       file,
       saved: false,
     };
@@ -343,13 +340,10 @@ export function LiveCamera({
     else if (autoRef.current && modeRef.current !== 'receipt' && liveRef.current === 'hold' && !busy.current) shootRef.current();
     const list = taken.current;
     const files = await Promise.all(list.map((x) => x.file));
-    const kept = list
-      .map((x, i) => ({ card: x.card, receipt: x.receipt, file: files[i] }))
-      .filter((x): x is { card: boolean; receipt: boolean; file: File } => !!x.file);
+    const kept = list.map((x, i) => ({ card: x.card, file: files[i] })).filter((x): x is { card: boolean; file: File } => !!x.file);
     onDone(
       kept.map((x) => x.file),
       kept.filter((x) => x.card).map((x) => x.file),
-      kept.filter((x) => x.receipt).map((x) => x.file),
     );
   };
   const finishRef = useRef(finish);
@@ -363,7 +357,6 @@ export function LiveCamera({
       id: ++shotIds,
       url: r.thumb,
       card: false,
-      receipt: false,
       file: r.file.then((f) => {
         if (f) takenByHand.add(f); // the crop screen starts from the whole picture: it is cut already
         return f;
