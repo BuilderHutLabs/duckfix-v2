@@ -1,4 +1,4 @@
-import { createSweep, findStrip, rowFeatures, unwarpStrip, type SweepState } from '../../src/scan/sweep';
+import { createSweep, findStrip, layoutSweep, rowFeatures, unwarpStrip, type SweepKey, type SweepState } from '../../src/scan/sweep';
 import { frameOf, makeReceipt } from './sweepFixture';
 
 const RW = 200;
@@ -124,5 +124,73 @@ describe('Paragon sweep: following the receipt', () => {
     const { pos, states } = run(rec, steps(0, 560, 56));
     expect(states).toContain('fast');
     expect(Math.abs(pos - 560 * PER_ROW)).toBeLessThanOrEqual(560 * PER_ROW * 0.03);
+  });
+});
+
+/**
+ * The whole way on a made-up receipt: frames, the sweep, the kept frames (and the last one), the
+ * layout. Returns the length put together (rows of the receipt) and, for each join, how far apart
+ * the two frames were put against how far apart they really were (rows of the strip).
+ */
+function sweepAndCompose(r: Uint8ClampedArray, ys: number[], o: (y: number) => Partial<Parameters<typeof frameOf>[3]> = () => ({})) {
+  const sw = createSweep();
+  const keys: (SweepKey & { y: number })[] = [];
+  let last: (SweepKey & { y: number }) | null = null;
+  for (const y of ys) {
+    const opts = { y, frameW: 200, frameH: 150, paperW: 120, noise: 6, seed: y * 7 + 1, ...o(y) };
+    const g = frameOf(r, RW, RH, opts);
+    const u = unwarpStrip(g, 200, 150, findStrip(g, 200, 150)!);
+    const f = rowFeatures(u.data, u.w, u.h);
+    const out = sw.push(f);
+    last = { pos: out.pos, rows: u.h, feats: f, y };
+    if (out.capture) {
+      sw.captured(f);
+      keys.push(last);
+    }
+  }
+  keys.push(last!); // "Stop": the last frame too
+  const ranges = layoutSweep(keys);
+  const length = ranges.reduce((n, rg) => n + rg.to - rg.from, 0) / PER_ROW;
+  // where frame b starts in frame a's rows is a.to - b.from (both meet at the cut)
+  const joins = ranges.slice(1).map((b, i) => ({ put: ranges[i].to - b.from, real: (keys[i + 1].y - keys[i].y) * PER_ROW }));
+  return { length, joins };
+}
+
+/** A join off by more than this many strip rows shows a line twice or loses one (a line is ~3.4 rows). */
+const JOIN_OK = 1.5;
+
+describe('Paragon sweep: the kept frames make one receipt', () => {
+  const all = steps(0, 640, 6);
+  // the last frame shows the receipt down to row 640 + 250 (150 frame rows at 0.6 px per receipt row)
+  const SEEN = 640 + 250;
+
+  it('as long as the real one, and the same all the way down', () => {
+    const { length, joins } = sweepAndCompose(rec, all);
+    expect(Math.abs(length - SEEN) / SEEN).toBeLessThanOrEqual(0.02);
+    for (const j of joins) expect(Math.abs(j.put - j.real)).toBeLessThanOrEqual(JOIN_OK);
+  });
+
+  it('the phone comes closer and goes back on the way: still the right length', () => {
+    const { length, joins } = sweepAndCompose(rec, all, (y) => ({ paperW: 120 + 10 * Math.sin(y / 100) }));
+    expect(Math.abs(length - SEEN) / SEEN).toBeLessThanOrEqual(0.02);
+    for (const j of joins) expect(Math.abs(j.put - j.real)).toBeLessThanOrEqual(JOIN_OK);
+  });
+
+  it('forty lines that look alike: none of them twice, none missing', () => {
+    const same = makeReceipt(RW, RH, { repeatFrom: 150, repeatTo: 790 });
+    const { length, joins } = sweepAndCompose(same, all);
+    expect(Math.abs(length - SEEN) / SEEN).toBeLessThanOrEqual(0.02);
+    for (const j of joins) expect(Math.abs(j.put - j.real)).toBeLessThanOrEqual(JOIN_OK);
+  });
+
+  it('a wrong place from tracking (off by a few rows) is put right at the join', () => {
+    const keys = [0, 112, 224].map((y) => {
+      const g = frameOf(rec, RW, RH, { y, frameW: 200, frameH: 150, paperW: 120, noise: 6 });
+      const u = unwarpStrip(g, 200, 150, findStrip(g, 200, 150)!);
+      return { pos: y * PER_ROW + (y ? 4 : 0), rows: u.h, feats: rowFeatures(u.data, u.w, u.h) };
+    });
+    const [a, b] = layoutSweep(keys);
+    // the second frame starts 112 receipt rows (53.8 strip rows) below the first: the cut sits in the overlap
+    expect(Math.abs(a.to - b.from - 112 * PER_ROW)).toBeLessThanOrEqual(1);
   });
 });

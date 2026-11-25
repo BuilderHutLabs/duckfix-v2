@@ -300,3 +300,34 @@ export function createSweep({ keyFrac = 0.45, fastFrac = 0.2, lostTicks = 3 } = 
     },
   };
 }
+
+/** A sharp frame kept on the way: where its top is (rows of the strip), how tall it is, its row features. */
+export type SweepKey = { pos: number; rows: number; feats: Float32Array };
+
+/** How far around the tracked place each join is looked for again (fraction of the frame). */
+const JOIN_REACH = 0.06;
+
+/**
+ * Which rows of each kept frame make the receipt: neighbours meet with no overlap and no gap. Each
+ * join is looked for once more near where tracking put it, and cut in the middle of the overlap (the
+ * middle of a frame is its sharpest, least bent part).
+ */
+export function layoutSweep(keys: SweepKey[]): { from: number; to: number }[] {
+  if (!keys.length) return [];
+  const at = [keys[0].pos];
+  for (let i = 1; i < keys.length; i++) {
+    const expected = keys[i].pos - keys[i - 1].pos;
+    const r = trackShift(keys[i - 1].feats, keys[i].feats, expected, JOIN_REACH);
+    const step = !r.blank && r.score < BAD_SCORE ? r.shift : expected;
+    at.push(at[i - 1] + step);
+  }
+  const cuts: number[] = [];
+  for (let i = 0; i + 1 < keys.length; i++) {
+    const end = at[i] + keys[i].rows;
+    cuts.push(end > at[i + 1] ? (at[i + 1] + end) / 2 : at[i + 1]);
+  }
+  return keys.map((k, i) => ({
+    from: i === 0 ? 0 : Math.max(0, cuts[i - 1] - at[i]),
+    to: i === keys.length - 1 ? k.rows : Math.min(k.rows, cuts[i] - at[i]),
+  }));
+}
