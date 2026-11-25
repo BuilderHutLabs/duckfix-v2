@@ -4,9 +4,16 @@ const PAPER = 245;
 const INK = 40;
 const TABLE = 70;
 
+/** Steady pseudo-random numbers 0..1 (mulberry32: no short cycles, unlike a float LCG). */
 function rng(seed: number) {
-  let x = seed;
-  return () => (x = (x * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 /**
@@ -57,17 +64,22 @@ export function frameOf(rec: Uint8ClampedArray, rw: number, rh: number, o: Frame
   const rnd = rng(o.seed ?? 3);
   const noise = o.noise ?? 0;
   const out = new Uint8ClampedArray(fw * fh);
+  // each pixel averages 3 × 3 points, as a camera's lens and sensor do (no sharp stair-steps)
+  const at = (px: number, py: number): number => {
+    const cx = px - fw / 2;
+    const cy = py - fh / 2;
+    const ux = cx * cos + cy * sin + fw / 2;
+    const uy = -cx * sin + cy * cos + fh / 2;
+    const rx = Math.floor((ux - (fw - paperW) / 2) / s);
+    const ry = Math.floor(o.y + uy / s);
+    if (rx >= 0 && rx < rw && ry >= 0 && ry < rh) return rec[ry * rw + rx];
+    return TABLE + ((Math.floor(px) * 7 + Math.floor(py) * 13) % 9) - 4;
+  };
   for (let fy = 0; fy < fh; fy++) {
     for (let fx = 0; fx < fw; fx++) {
-      // back from the frame to the untilted picture (turned about the frame centre)
-      const cx = fx + 0.5 - fw / 2;
-      const cy = fy + 0.5 - fh / 2;
-      const ux = cx * cos + cy * sin + fw / 2;
-      const uy = -cx * sin + cy * cos + fh / 2;
-      const rx = Math.floor((ux - (fw - paperW) / 2) / s);
-      const ry = Math.floor(o.y + uy / s);
-      let v = TABLE + ((fx * 7 + fy * 13) % 9) - 4;
-      if (rx >= 0 && rx < rw && ry >= 0 && ry < rh) v = rec[ry * rw + rx];
+      let v = 0;
+      for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) v += at(fx + (i + 0.5) / 3, fy + (j + 0.5) / 3);
+      v /= 9;
       if (noise) v += Math.round((rnd() * 2 - 1) * noise);
       out[fy * fw + fx] = v;
     }

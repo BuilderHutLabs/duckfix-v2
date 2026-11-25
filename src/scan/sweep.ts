@@ -108,16 +108,195 @@ export function unwarpStrip(
   const yTop = h * TOP_Y;
   const span = h * (BOT_Y - TOP_Y);
   for (let j = 0; j < outH; j++) {
-    const y = Math.min(h - 1, Math.floor((j + 0.5) / k));
-    const f = (y + 0.5 - yTop) / span;
+    // rows are read in between (a smooth move gives smooth changes), columns at the nearest pixel
+    const fy = Math.max(0, Math.min(h - 1, (j + 0.5) / k - 0.5));
+    const y = Math.floor(fy);
+    const y2 = Math.min(h - 1, y + 1);
+    const t = fy - y;
+    const f = (fy + 0.5 - yTop) / span;
     const l = s.topL + (s.botL - s.topL) * f;
     const r = s.topR + (s.botR - s.topR) * f;
     const step = (r - l) / outW;
-    const row = y * w;
     for (let i = 0; i < outW; i++) {
       const x = Math.max(0, Math.min(w - 1, Math.floor(l + (i + 0.5) * step)));
-      data[j * outW + i] = gray[row + x];
+      data[j * outW + i] = gray[y * w + x] * (1 - t) + gray[y2 * w + x] * t;
     }
   }
   return { data, w: outW, h: outH };
+}
+
+/** Columns each row of the strip is summed into: enough to tell one line of print from another. */
+export const BINS = 24;
+
+/** Per row of a grey picture (w × h), how dark each of BINS columns is (0 = paper). */
+export function rowFeatures(gray: Uint8ClampedArray, w: number, h: number): Float32Array {
+  const f = new Float32Array(h * BINS);
+  const per = w / BINS;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const b = Math.min(BINS - 1, Math.floor(x / per));
+      f[y * BINS + b] += (255 - gray[y * w + x]) / per;
+    }
+  }
+  return f;
+}
+
+/** Below this spread of the features there is only blank paper: nothing to follow. */
+const BLANK_SPREAD = 4;
+/** A match worse than this is no match. */
+const BAD_SCORE = 0.5;
+
+/** The features blurred a little from row to row: a move by part of a row then still matches. */
+function smooth(f: Float32Array): Float32Array {
+  const h = f.length / BINS;
+  const out = new Float32Array(f.length);
+  const k = [1, 4, 6, 4, 1];
+  for (let y = 0; y < h; y++) {
+    for (let b = 0; b < BINS; b++) {
+      let s = 0;
+      let n = 0;
+      for (let i = -2; i <= 2; i++) {
+        const yy = y + i;
+        if (yy < 0 || yy >= h) continue;
+        s += f[yy * BINS + b] * k[i + 2];
+        n += k[i + 2];
+      }
+      out[y * BINS + b] = s / n;
+    }
+  }
+  return out;
+}
+
+function spread(f: Float32Array): number {
+  let mean = 0;
+  for (const v of f) mean += v;
+  mean /= f.length || 1;
+  let s = 0;
+  for (const v of f) s += (v - mean) * (v - mean);
+  return s / (f.length || 1);
+}
+
+/** How badly row `s` of `a` onwards matches `b` from its top (0 = the same; Infinity: too little in common). */
+function matchScore(a: Float32Array, b: Float32Array, s: number, minRows: number): number {
+  const ha = a.length / BINS;
+  const hb = b.length / BINS;
+  const a0 = Math.max(0, s);
+  const b0 = Math.max(0, -s);
+  const rows = Math.min(ha - a0, hb - b0);
+  if (rows < minRows) return Infinity;
+  const n = rows * BINS;
+  let mean = 0;
+  for (let i = 0; i < n; i++) mean += a[a0 * BINS + i];
+  mean /= n;
+  let diff = 0;
+  let ink = 0;
+  for (let i = 0; i < n; i++) {
+    const va = a[a0 * BINS + i];
+    const d = va - b[b0 * BINS + i];
+    diff += d * d;
+    ink += (va - mean) * (va - mean);
+  }
+  if (ink / n < BLANK_SPREAD) return Infinity;
+  return diff / ink;
+}
+
+/**
+ * How many rows the print moved up from strip `prev` to strip `next` (row features of two strips).
+ * Looked for within maxFrac of the height around `predicted`; of the shifts that match about as well
+ * as the best one (lines that all look alike), the one nearest `predicted` wins. Sub-row precise.
+ */
+export function trackShift(
+  prev: Float32Array,
+  next: Float32Array,
+  predicted: number,
+  maxFrac = 0.35,
+): { shift: number; score: number; blank: boolean } {
+  if (spread(prev) < BLANK_SPREAD || spread(next) < BLANK_SPREAD) return { shift: predicted, score: Infinity, blank: true };
+  prev = smooth(prev);
+  next = smooth(next);
+  const ha = prev.length / BINS;
+  const hb = next.length / BINS;
+  const minRows = Math.max(8, Math.round(Math.min(ha, hb) * 0.3));
+  const reach = Math.max(2, Math.round(Math.min(ha, hb) * maxFrac));
+  const lo = Math.max(-(hb - minRows), Math.round(predicted) - reach);
+  const hi = Math.min(ha - minRows, Math.round(predicted) + reach);
+  const scores = new Map<number, number>();
+  let best = Infinity;
+  for (let s = lo; s <= hi; s++) {
+    const sc = matchScore(prev, next, s, minRows);
+    scores.set(s, sc);
+    if (sc < best) best = sc;
+  }
+  if (!Number.isFinite(best)) return { shift: predicted, score: Infinity, blank: false };
+  let pick = lo;
+  let pickDist = Infinity;
+  for (const [s, sc] of scores) {
+    if (sc > best + 0.2) continue;
+    const d = Math.abs(s - predicted);
+    if (d < pickDist) {
+      pickDist = d;
+      pick = s;
+    }
+  }
+  // the low point of a parabola through the scores around it
+  const l = scores.get(pick - 1) ?? Infinity;
+  const r = scores.get(pick + 1) ?? Infinity;
+  const c = scores.get(pick)!;
+  let shift = pick;
+  if (Number.isFinite(l) && Number.isFinite(r)) {
+    const den = l - 2 * c + r;
+    if (den > 1e-9) shift += Math.max(-0.5, Math.min(0.5, (l - r) / (2 * den)));
+  }
+  return { shift, score: c, blank: false };
+}
+
+export type SweepState = 'moving' | 'fast' | 'lost' | 'blank';
+
+/**
+ * Follows the receipt from frame to frame (row features of each strip) and says when to keep a sharp
+ * frame. Each frame is compared with the last kept one (not with the frame before), so small errors
+ * do not add up. `pos`: rows of the strip moved since the first frame.
+ */
+export function createSweep({ keyFrac = 0.45, fastFrac = 0.2, lostTicks = 3 } = {}) {
+  let key: Float32Array | null = null;
+  let keyPos = 0;
+  let offset = 0;
+  let speed = 0;
+  let bad = 0;
+  let lost = false;
+  let state: SweepState = 'moving';
+  return {
+    push(feats: Float32Array): { pos: number; state: SweepState; capture: boolean } {
+      if (!key) return { pos: 0, state: 'moving', capture: true };
+      const rows = feats.length / BINS;
+      const r = lost ? trackShift(key, feats, offset, 1) : trackShift(key, feats, offset + speed);
+      if (r.blank) {
+        if (!lost) state = 'blank';
+        return { pos: keyPos + offset, state, capture: false };
+      }
+      if (r.score >= BAD_SCORE) {
+        if (!lost && ++bad >= lostTicks) {
+          lost = true;
+          speed = 0;
+        }
+        if (lost) state = 'lost';
+        return { pos: keyPos + offset, state, capture: false };
+      }
+      bad = 0;
+      const was = lost;
+      lost = false;
+      const step = r.shift - offset;
+      // the speed is smoothed: one odd frame does not throw the next guess far off
+      speed = was ? 0 : speed * 0.5 + step * 0.5;
+      offset = r.shift;
+      state = Math.abs(step) > fastFrac * rows ? 'fast' : 'moving';
+      return { pos: keyPos + offset, state, capture: offset >= keyFrac * rows };
+    },
+    /** The frame with these features was kept: the next ones are compared with it. */
+    captured(feats: Float32Array) {
+      key = feats;
+      keyPos += offset;
+      offset = 0;
+    },
+  };
 }
