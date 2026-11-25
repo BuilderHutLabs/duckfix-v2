@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
-import { createSweep, findStrip, layoutSweep, rowFeatures, stripEdges, unwarpStrip, type SweepKey, type SweepState } from '../scan/sweep';
+import { findStrip, stripEdges } from '../scan/sweep';
+import { createTracker, layoutKeys, prepare, type SweepState, type TrackKey } from '../scan/track';
 import { composeSweep, cutKey, grabGray } from '../scan/sweepFrame';
 import type { Pt } from '../scan/quad';
 import { quadToView } from '../scan/liveScan';
@@ -37,9 +38,9 @@ function safeGrab(v: HTMLVideoElement, canvas: HTMLCanvasElement, side: number):
 export type SweepResult = { file: Promise<File | null>; thumb: string };
 
 /**
- * "Paragon" in the camera: while `enabled`, the receipt's edges are looked for a few times a second;
- * after `start` the receipt is followed and sharp frames are kept on the way; `stop` (or too many
- * frames) puts them together and hands the result to `onFinished`.
+ * "Paragon" in the camera: while `enabled`, the picture is looked at a few times a second; after
+ * `start` the camera is followed over the receipt (like a panorama) and sharp frames are kept on the
+ * way; `stop` (or too many frames) puts them together and hands the result to `onFinished`.
  */
 export function useReceiptSweep(video: RefObject<HTMLVideoElement>, enabled: boolean, onFinished: (r: SweepResult) => void) {
   const [recording, setRecording] = useState(false);
@@ -51,9 +52,9 @@ export function useReceiptSweep(video: RefObject<HTMLVideoElement>, enabled: boo
   const [notice, setNotice] = useState('');
 
   const rec = useRef<{
-    sweep: ReturnType<typeof createSweep>;
-    keys: SweepKey[];
-    cuts: Promise<{ blob: Blob; width: number }>[];
+    tracker: ReturnType<typeof createTracker>;
+    keys: (TrackKey & { pos: number })[];
+    cuts: Promise<{ blob: Blob }>[];
     thumbs: string[];
     state: SweepState;
   } | null>(null);
@@ -75,14 +76,11 @@ export function useReceiptSweep(video: RefObject<HTMLVideoElement>, enabled: boo
     const v = video.current;
     const lastKept = r.keys.at(-1);
     const g = v && lookCanvas.current ? safeGrab(v, lookCanvas.current, isWeakDevice() ? GRAB_W_WEAK : GRAB_W) : null;
-    const strip = g ? findStrip(g.gray, g.w, g.h) : null;
-    if (v && g && strip && lastKept) {
-      const u = unwarpStrip(g.gray, g.w, g.h, strip);
-      const feats = rowFeatures(u.data, u.w, u.h);
-      const out = r.sweep.push(feats);
+    if (v && g && lastKept) {
+      const out = r.tracker.push(prepare(g.gray, g.w, g.h));
       if ((out.state === 'moving' || out.state === 'fast') && out.pos - lastKept.pos > 2) {
-        r.keys.push({ pos: out.pos, rows: u.h, feats });
-        const cut = cutKey(v, strip, g.w);
+        r.keys.push({ global: out.global, w: g.w, h: g.h, pos: out.pos });
+        const cut = cutKey(v);
         r.cuts.push(quiet(cut));
         void cut.then((c) => r.thumbs.push(c.thumb)).catch(() => {});
       }
@@ -91,7 +89,7 @@ export function useReceiptSweep(video: RefObject<HTMLVideoElement>, enabled: boo
     const file = !r.keys.length
       ? Promise.resolve(null)
       : Promise.all(r.cuts)
-          .then((cuts) => composeSweep(cuts, layoutSweep(r.keys)))
+          .then((cuts) => composeSweep(cuts, r.keys, layoutKeys(r.keys)))
           .then((b) => new File([b], `paragon-${Date.now()}.jpg`, { type: 'image/jpeg', lastModified: Date.now() }))
           .catch(() => {
             setNotice(strings.sweepFailed);
@@ -104,7 +102,7 @@ export function useReceiptSweep(video: RefObject<HTMLVideoElement>, enabled: boo
 
   const start = () => {
     if (rec.current) return;
-    rec.current = { sweep: createSweep(), keys: [], cuts: [], thumbs: [], state: 'moving' };
+    rec.current = { tracker: createTracker(), keys: [], cuts: [], thumbs: [], state: 'moving' };
     setRecording(true);
     setSeconds(0);
     setThumbs([]);
@@ -160,23 +158,20 @@ export function useReceiptSweep(video: RefObject<HTMLVideoElement>, enabled: boo
       setEdges(strip ? quadToView(stripEdges(strip, g.h), g.w, g.h, v.clientWidth, v.clientHeight) : null);
       const r = rec.current;
       if (g.light < DARK) return say(strings.sweepDark, true);
-      if (!strip) return say(strings.sweepNoReceipt, true);
       if (!r) return say(strings.sweepStart);
-      const u = unwarpStrip(g.gray, g.w, g.h, strip);
-      const feats = rowFeatures(u.data, u.w, u.h);
-      const out = r.sweep.push(feats);
+      const pic = prepare(g.gray, g.w, g.h);
+      const out = r.tracker.push(pic);
       if (out.state === 'fast' && r.state !== 'fast') navigator.vibrate?.(30);
       r.state = out.state;
-      const key = { pos: out.pos, rows: u.h, feats };
       if (out.state === 'fast') say(strings.sweepFast, true);
       else if (out.state === 'lost') say(strings.sweepLost, true);
-      else if (strip.y1 < g.h * 0.85)
+      else if (strip && strip.y1 < g.h * 0.85)
         say(strings.sweepEnd); // the receipt's end is in view
       else say(strings.sweepMove);
       if (!out.capture) return;
-      r.sweep.captured(feats);
-      r.keys.push(key);
-      const cut = cutKey(v, strip, g.w);
+      r.tracker.captured(pic, out.global);
+      r.keys.push({ global: out.global, w: g.w, h: g.h, pos: out.pos });
+      const cut = cutKey(v);
       r.cuts.push(quiet(cut));
       void cut
         .then((c) => {

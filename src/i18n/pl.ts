@@ -195,7 +195,6 @@ export const pl = {
   sweepFast: 'Wolniej',
   sweepLost: 'Wróć trochę wyżej',
   sweepDark: 'Za ciemno — włącz latarkę',
-  sweepNoReceipt: 'Nie widzę paragonu — połóż go na ciemniejszym tle',
   sweepFull: 'Paragon jest bardzo długi — zakończyłem nagrywanie',
   sweepStop: 'Zakończ paragon',
   sweepEnd: 'Koniec paragonu? Naciśnij Zakończ',

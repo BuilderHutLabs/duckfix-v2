@@ -188,7 +188,6 @@ export const en: Strings = {
   sweepFast: 'Slower',
   sweepLost: 'Go back up a little',
   sweepDark: 'Too dark — turn on the torch',
-  sweepNoReceipt: 'No receipt in view — put it on a darker surface',
   sweepFull: 'The receipt is very long — recording stopped',
   sweepStop: 'Finish the receipt',
   sweepEnd: 'End of the receipt? Press Finish',

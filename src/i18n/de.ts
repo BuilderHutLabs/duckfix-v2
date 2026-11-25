@@ -188,7 +188,6 @@ export const de: Strings = {
   sweepFast: 'Langsamer',
   sweepLost: 'Etwas zurück nach oben',
   sweepDark: 'Zu dunkel — Taschenlampe einschalten',
-  sweepNoReceipt: 'Kein Kassenbon zu sehen — auf eine dunklere Fläche legen',
   sweepFull: 'Der Kassenbon ist sehr lang — Aufnahme beendet',
   sweepStop: 'Kassenbon beenden',
   sweepEnd: 'Ende des Kassenbons? Auf Beenden drücken',

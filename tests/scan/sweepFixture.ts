@@ -49,6 +49,8 @@ export type FrameOpts = {
   paperW: number;
   /** Clockwise turn of the receipt in the frame (degrees): its top leans right. */
   tiltDeg?: number;
+  /** The hand's sway: the receipt sits this many px right of the middle. */
+  dx?: number;
   /** Shadow of the phone: the frame darkens by this share from top to bottom (it stays with the camera). */
   shade?: number;
   /** Grain (± grey levels). */
@@ -72,10 +74,11 @@ export function frameOf(rec: Uint8ClampedArray, rw: number, rh: number, o: Frame
     const cy = py - fh / 2;
     const ux = cx * cos + cy * sin + fw / 2;
     const uy = -cx * sin + cy * cos + fh / 2;
-    const rx = Math.floor((ux - (fw - paperW) / 2) / s);
+    const rx = Math.floor((ux - (fw - paperW) / 2 - (o.dx ?? 0)) / s);
     const ry = Math.floor(o.y + uy / s);
     if (rx >= 0 && rx < rw && ry >= 0 && ry < rh) return rec[ry * rw + rx];
-    return TABLE + ((Math.floor(px) * 7 + Math.floor(py) * 13) % 9) - 4;
+    // the table's grain lies on the table (it moves with the receipt, not with the camera)
+    return TABLE + Math.round(6 * Math.sin(rx * 0.21 + ry * 0.05) + 3 * Math.sin(ry * 0.37 - rx * 0.11));
   };
   for (let fy = 0; fy < fh; fy++) {
     for (let fx = 0; fx < fw; fx++) {
@@ -87,5 +90,25 @@ export function frameOf(rec: Uint8ClampedArray, rw: number, rh: number, o: Frame
       out[fy * fw + fx] = v;
     }
   }
+  return out;
+}
+
+/**
+ * Two receipts one under the other on the table: the second one narrower and to one side, with a
+ * strip of table between them (table pixels inside the picture show the table).
+ */
+export function joinedReceipts(w: number, h: number): Uint8ClampedArray {
+  const a = makeReceipt(w, h, { seed: 11 });
+  const b = makeReceipt(w, h, { seed: 23 });
+  const out = new Uint8ClampedArray(w * h);
+  const gapFrom = Math.round(h * 0.45);
+  const gapTo = gapFrom + 30;
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (y < gapFrom) out[i] = a[i];
+      else if (y < gapTo) out[i] = TABLE;
+      else out[i] = x < w * 0.12 ? TABLE : b[i]; // narrower, to the right
+    }
   return out;
 }

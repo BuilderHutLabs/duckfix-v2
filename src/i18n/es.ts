@@ -188,7 +188,6 @@ export const es: Strings = {
   sweepFast: 'Más despacio',
   sweepLost: 'Vuelve un poco hacia arriba',
   sweepDark: 'Demasiado oscuro — enciende la linterna',
-  sweepNoReceipt: 'No veo el recibo — ponlo sobre una superficie más oscura',
   sweepFull: 'El recibo es muy largo — grabación terminada',
   sweepStop: 'Terminar el recibo',
   sweepEnd: '¿Final del recibo? Pulsa Terminar',

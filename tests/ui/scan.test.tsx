@@ -52,27 +52,29 @@ const sweepCtl = vi.hoisted(() => ({
 }));
 vi.mock('../../src/scan/sweepFrame', () => ({
   grabGray: vi.fn(() => ({ gray: new Uint8ClampedArray(240 * 180), w: 240, h: 180, light: sweepCtl.light })),
-  cutKey: vi.fn(async () => ({ blob: new Blob(['key'], { type: 'image/jpeg' }), thumb: 'data:image/jpeg;base64,key', width: 1200 })),
+  cutKey: vi.fn(async () => ({ blob: new Blob(['key'], { type: 'image/jpeg' }), thumb: 'data:image/jpeg;base64,key' })),
   composeSweep: vi.fn(async () => new Blob(['receipt'], { type: 'image/jpeg' })),
 }));
 vi.mock('../../src/scan/sweep', async (orig) => ({
   ...(await orig<typeof import('../../src/scan/sweep')>()),
   findStrip: vi.fn(() => sweepCtl.strip),
-  unwarpStrip: vi.fn(() => ({ data: new Uint8ClampedArray(96 * 10), w: 96, h: 10 })),
-  rowFeatures: vi.fn(() => new Float32Array(240)),
-  createSweep: vi.fn(() => {
+}));
+vi.mock('../../src/scan/track', async (orig) => ({
+  ...(await orig<typeof import('../../src/scan/track')>()),
+  prepare: vi.fn(() => ({ levels: [], spread: 10 })),
+  createTracker: vi.fn(() => {
     let first = true;
     return {
       push: () => {
         sweepCtl.pushes++;
         const capture = first || sweepCtl.alwaysKeep || sweepCtl.out.capture;
         first = false;
-        return { ...sweepCtl.out, capture };
+        return { ...sweepCtl.out, capture, global: [1, 0, 0, 0, 1, sweepCtl.out.pos], ncc: 1 };
       },
       captured: vi.fn(),
     };
   }),
-  layoutSweep: vi.fn((keys: { rows: number }[]) => keys.map((k) => ({ from: 0, to: k.rows }))),
+  layoutKeys: vi.fn((keys: unknown[]) => ({ bands: keys.map(() => ({ from: 0, to: 1 })), left: 0, right: 1, top: 0, bottom: 1 })),
 }));
 
 vi.mock('../../src/scan/card', async (orig) => ({
@@ -524,13 +526,12 @@ describe('built-in camera', () => {
       expect(await screen.findByText(strings.sweepLost)).toBeTruthy();
     });
 
-    it('no receipt in view: says so, and nothing is followed', async () => {
+    it('no receipt edges to be seen (it fills the frame): still followed, the picture is enough', async () => {
       sweepCtl.strip = null;
       await openReceipt();
-      expect(await screen.findByText(strings.sweepNoReceipt)).toBeTruthy();
       await act(async () => fireEvent.click(shutter()));
-      await new Promise((r) => setTimeout(r, 300));
-      expect(sweepCtl.pushes).toBe(0);
+      await waitFor(() => expect(sweepCtl.pushes).toBeGreaterThan(1));
+      expect(await screen.findByText(strings.sweepMove)).toBeTruthy();
     });
 
     it('"Zakończ paragon": one photo; "Gotowe" and "Dodaj": one page made of the kept frames', async () => {
@@ -574,18 +575,17 @@ describe('built-in camera', () => {
       expect(vi.mocked(warp.warpToBlob).mock.calls[1][1]).toEqual(fullQuad(4000, 3000));
     });
 
-    it('Stop takes the bottom frame from a fresh look at that moment (its own edges), not from a look before', async () => {
+    it('Stop takes the bottom frame from a fresh look at that moment, not from a look before', async () => {
       const sf = await import('../../src/scan/sweepFrame');
       await openReceipt();
       await act(async () => fireEvent.click(shutter()));
       await waitFor(() => expect(sweepCtl.pushes).toBeGreaterThan(1));
       vi.mocked(sf.cutKey).mockClear();
-      const now = { topL: 62, topR: 182, botL: 62, botR: 182, y0: 0, y1: 120 }; // the receipt's end has come up into view
-      sweepCtl.strip = now;
-      sweepCtl.out = { pos: 40, state: 'moving', capture: false };
+      sweepCtl.out = { pos: 40, state: 'moving', capture: false }; // moved on since the last look
+      const before = sweepCtl.pushes;
       await act(async () => fireEvent.click(shutter()));
+      expect(sweepCtl.pushes).toBe(before + 1); // one more look, right at "Stop"
       expect(vi.mocked(sf.cutKey)).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(sf.cutKey).mock.calls[0][1]).toBe(now);
     });
 
     it('Stop while lost: no bottom frame is guessed', async () => {
