@@ -4,8 +4,14 @@
  * frames kept on the way are laid out into one receipt.
  */
 
-/** Left and right edge of the receipt (columns, px) in the top and in the bottom band of a frame. */
-export type Strip = { topL: number; topR: number; botL: number; botR: number };
+/**
+ * Left and right edge of the receipt (columns, px) in the top and in the bottom band of a frame, and
+ * the rows the paper takes (y0..y1): the whole frame, or less when its top or its end is in view.
+ */
+export type Strip = { topL: number; topR: number; botL: number; botR: number; y0: number; y1: number };
+
+/** Columns the receipt is brought to: a row of the strip, the unit of every position, is 1/STRIP_W of its width. */
+export const STRIP_W = 128;
 
 /** The two bands the edges are measured in (fractions of the frame height), and their middle rows. */
 const BAND = 0.25;
@@ -43,10 +49,18 @@ function otsu(values: Float32Array): number {
 }
 
 /** The paper's columns in rows y0..y1: the longest run of light columns, or null. */
-function edgesIn(gray: Uint8ClampedArray, w: number, y0: number, y1: number): { l: number; r: number } | null {
+function edgesIn(gray: Uint8ClampedArray, w: number, y0: number, y1: number): { l: number; r: number; thr: number } | null {
+  // per column, a light value of the band (its top tenth): paper is light between the lines of print
+  // even where the print is dense and its strokes line up; the table is dark everywhere
   const col = new Float32Array(w);
-  for (let y = y0; y < y1; y++) for (let x = 0; x < w; x++) col[x] += gray[y * w + x];
-  for (let x = 0; x < w; x++) col[x] /= y1 - y0;
+  const n = y1 - y0;
+  const vals = new Uint8Array(n);
+  const at = Math.min(n - 1, Math.floor(n * 0.9));
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < n; y++) vals[y] = gray[(y0 + y) * w + x];
+    vals.sort();
+    col[x] = vals[at];
+  }
   const thr = otsu(col);
   let light = 0;
   let nl = 0;
@@ -62,22 +76,53 @@ function edgesIn(gray: Uint8ClampedArray, w: number, y0: number, y1: number): { 
     }
   }
   if (!nl || !nd || light / nl - dark / nd < MIN_CONTRAST) return null;
+  // what tells paper from table row by row: nearer the table's grey (shaded paper and dense print stay paper)
+  const rowThr = dark / nd + (light / nl - dark / nd) * 0.4;
+  // the longest light run; a narrow dark gap inside it is print, not table
+  const maxGap = Math.max(3, Math.round(w * 0.04));
   let bestL = 0;
   let bestLen = 0;
-  for (let x = 0; x < w;) {
+  let x = 0;
+  while (x < w) {
     if (col[x] <= thr) {
       x++;
       continue;
     }
     const start = x;
-    while (x < w && col[x] > thr) x++;
-    if (x - start > bestLen) {
-      bestLen = x - start;
+    let end = x;
+    while (x < w) {
+      if (col[x] > thr) {
+        end = ++x;
+        continue;
+      }
+      let g = x;
+      while (g < w && col[g] <= thr) g++;
+      if (g < w && g - x <= maxGap) x = g;
+      else break;
+    }
+    if (end - start > bestLen) {
+      bestLen = end - start;
       bestL = start;
     }
+    x = Math.max(x, end + 1);
   }
   if (bestLen < w * 0.25 || bestLen > w * 0.95) return null;
-  return { l: bestL, r: bestL + bestLen };
+  // the edges between pixels: where the light value crosses the threshold
+  const end = bestL + bestLen;
+  let l = bestL;
+  let r = end;
+  if (bestL > 0 && col[bestL] > col[bestL - 1]) l = bestL - 0.5 + (thr - col[bestL - 1]) / (col[bestL] - col[bestL - 1]);
+  if (end < w && col[end - 1] > col[end]) r = end - 0.5 + (col[end - 1] - thr) / (col[end - 1] - col[end]);
+  return { l, r, thr: rowThr };
+}
+
+/** Is row y paper between columns l..r? (A good part of it light: print never covers most of a row.) */
+function paperRow(gray: Uint8ClampedArray, w: number, y: number, l: number, r: number, thr: number): boolean {
+  const a = Math.round(l + (r - l) * 0.1);
+  const b = Math.round(r - (r - l) * 0.1);
+  let light = 0;
+  for (let x = a; x < b; x++) if (gray[y * w + x] > thr) light++;
+  return light >= (b - a) * 0.2;
 }
 
 /** The receipt's edges in a grey frame (w × h), or null when no receipt on a darker table is seen. */
@@ -85,41 +130,86 @@ export function findStrip(gray: Uint8ClampedArray, w: number, h: number): Strip 
   const band = Math.max(1, Math.round(h * BAND));
   const top = edgesIn(gray, w, 0, band);
   const bot = edgesIn(gray, w, h - band, h);
-  if (!top || !bot) return null;
-  return { topL: top.l, topR: top.r, botL: bot.l, botR: bot.r };
+  if (!top && !bot) return null;
+  const edges =
+    top && bot
+      ? { topL: top.l, topR: top.r, botL: bot.l, botR: bot.r }
+      : { topL: (top ?? bot)!.l, topR: (top ?? bot)!.r, botL: (top ?? bot)!.l, botR: (top ?? bot)!.r };
+  const thr = top && bot ? (top.thr + bot.thr) / 2 : (top ?? bot)!.thr;
+  const lAt = (y: number) => edges.topL + ((edges.botL - edges.topL) * ((y + 0.5) / h - TOP_Y)) / (BOT_Y - TOP_Y);
+  const rAt = (y: number) => edges.topR + ((edges.botR - edges.topR) * ((y + 0.5) / h - TOP_Y)) / (BOT_Y - TOP_Y);
+  const isPaper = (y: number) => paperRow(gray, w, y, lAt(y), rAt(y), thr);
+  // the rows the paper takes, from a row that is surely paper up and down to where the table starts
+  // (the receipt's top or its end may be in view)
+  const from = top && bot ? Math.floor(h / 2) : top ? Math.floor(band / 2) : Math.floor(h - band / 2);
+  const gap = 3; // rows of table in a row end the paper
+  let y0 = 0;
+  let y1 = h;
+  // beyond the paper's top or end there is table: most rows there are not paper (else it was print)
+  const mostlyTable = (a: number, b: number) => {
+    let t = 0;
+    for (let y = a; y < b; y++) if (!isPaper(y)) t++;
+    return t >= (b - a) * 0.7;
+  };
+  for (let y = from, miss = 0; y >= 0; y--) {
+    miss = isPaper(y) ? 0 : miss + 1;
+    if (miss >= gap) {
+      if (mostlyTable(0, y + gap)) y0 = y + gap;
+      break;
+    }
+  }
+  for (let y = from, miss = 0; y < h; y++) {
+    miss = isPaper(y) ? 0 : miss + 1;
+    if (miss >= gap) {
+      if (mostlyTable(y - gap + 1, h)) y1 = y - gap + 1;
+      break;
+    }
+  }
+  if (y1 - y0 < h * 0.3) return null;
+  return { ...edges, y0, y1 };
 }
 
 /**
- * The receipt cut out of the frame and brought to `outW` columns: each row is read between the
- * edges (taken in a straight line from the top band to the bottom one), and the rows are scaled by
- * the same factor, so a "row of the strip" is the same length whatever the phone's distance.
+ * The receipt cut out of the frame, turned upright (its lean taken away, as cutKey does with the
+ * full picture) and brought to `outW` columns; rows are scaled by the same factor, so a "row of the
+ * strip" is the same share of the receipt's width whatever the phone's distance.
  */
 export function unwarpStrip(
   gray: Uint8ClampedArray,
   w: number,
   h: number,
   s: Strip,
-  outW = 96,
+  outW = STRIP_W,
 ): { data: Uint8ClampedArray; w: number; h: number } {
-  const paperW = (s.topR - s.topL + s.botR - s.botL) / 2;
+  const tilt = stripTilt(s, h);
+  const cos = Math.cos(tilt);
+  const sin = Math.sin(tilt);
+  const yc = h / 2;
+  const at = (top: number, bot: number, y: number) => top + ((bot - top) * (y / h - TOP_Y)) / (BOT_Y - TOP_Y);
+  const cx = (at(s.topL, s.botL, yc) + at(s.topR, s.botR, yc)) / 2;
+  // across the paper (perpendicular to its edges) it is narrower than across the frame
+  const paperW = (at(s.topR, s.botR, yc) - at(s.topL, s.botL, yc)) * cos || 1;
   const k = outW / paperW;
-  const outH = Math.max(1, Math.round(h * k));
+  const outH = Math.max(1, Math.round(((s.y1 - s.y0) / cos) * k));
   const data = new Uint8ClampedArray(outW * outH);
-  const yTop = h * TOP_Y;
-  const span = h * (BOT_Y - TOP_Y);
+  // down the receipt: (-sin, cos); across it: (cos, sin); the strip's top is where the middle line meets row y0
+  const t0 = (s.y0 - yc) / cos;
   for (let j = 0; j < outH; j++) {
-    // rows are read in between (a smooth move gives smooth changes), columns at the nearest pixel
-    const fy = Math.max(0, Math.min(h - 1, (j + 0.5) / k - 0.5));
-    const y = Math.floor(fy);
-    const y2 = Math.min(h - 1, y + 1);
-    const t = fy - y;
-    const f = (fy + 0.5 - yTop) / span;
-    const l = s.topL + (s.botL - s.topL) * f;
-    const r = s.topR + (s.botR - s.topR) * f;
-    const step = (r - l) / outW;
+    const t = t0 + (j + 0.5) / k;
+    const mx = cx - t * sin;
+    const my = yc + t * cos;
     for (let i = 0; i < outW; i++) {
-      const x = Math.max(0, Math.min(w - 1, Math.floor(l + (i + 0.5) * step)));
-      data[j * outW + i] = gray[y * w + x] * (1 - t) + gray[y2 * w + x] * t;
+      const v = ((i + 0.5) / outW - 0.5) * paperW * 0.96; // a hair inside the edges: no table at the sides
+      const fx = Math.max(0, Math.min(w - 1.001, mx + v * cos - 0.5));
+      const fy = Math.max(0, Math.min(h - 1.001, my + v * sin - 0.5));
+      const x0 = Math.floor(fx);
+      const y0 = Math.floor(fy);
+      const ax = fx - x0;
+      const ay = fy - y0;
+      const p = y0 * w + x0;
+      const top = gray[p] + (gray[p + 1] - gray[p]) * ax;
+      const bot = gray[p + w] + (gray[p + w + 1] - gray[p + w]) * ax;
+      data[j * outW + i] = top + (bot - top) * ay;
     }
   }
   return { data, w: outW, h: outH };
@@ -162,6 +252,26 @@ function smooth(f: Float32Array): Float32Array {
         n += k[i + 2];
       }
       out[y * BINS + b] = s / n;
+    }
+  }
+  return out;
+}
+
+/** Blurred a little, and the slow changes taken away (the phone's shadow, uneven light stay with the camera). */
+function prep(f: Float32Array): Float32Array {
+  const s = smooth(f);
+  const h = s.length / BINS;
+  const out = new Float32Array(s.length);
+  const R = 5;
+  for (let b = 0; b < BINS; b++) {
+    for (let y = 0; y < h; y++) {
+      let sum = 0;
+      let n = 0;
+      for (let yy = Math.max(0, y - R); yy <= Math.min(h - 1, y + R); yy++) {
+        sum += s[yy * BINS + b];
+        n++;
+      }
+      out[y * BINS + b] = s[y * BINS + b] - sum / n;
     }
   }
   return out;
@@ -211,9 +321,9 @@ export function trackShift(
   predicted: number,
   maxFrac = 0.35,
 ): { shift: number; score: number; blank: boolean } {
+  prev = prep(prev);
+  next = prep(next);
   if (spread(prev) < BLANK_SPREAD || spread(next) < BLANK_SPREAD) return { shift: predicted, score: Infinity, blank: true };
-  prev = smooth(prev);
-  next = smooth(next);
   const ha = prev.length / BINS;
   const hb = next.length / BINS;
   const minRows = Math.max(8, Math.round(Math.min(ha, hb) * 0.3));
@@ -231,7 +341,7 @@ export function trackShift(
   let pick = lo;
   let pickDist = Infinity;
   for (const [s, sc] of scores) {
-    if (sc > best + 0.2) continue;
+    if (sc > best * 3 + 0.25) continue;
     const d = Math.abs(s - predicted);
     if (d < pickDist) {
       pickDist = d;
@@ -257,7 +367,7 @@ export type SweepState = 'moving' | 'fast' | 'lost' | 'blank';
  * frame. Each frame is compared with the last kept one (not with the frame before), so small errors
  * do not add up. `pos`: rows of the strip moved since the first frame.
  */
-export function createSweep({ keyFrac = 0.45, fastFrac = 0.2, lostTicks = 3 } = {}) {
+export function createSweep({ keyFrac = 0.45, forceFrac = 0.6, fastFrac = 0.12, lostTicks = 3 } = {}) {
   let key: Float32Array | null = null;
   let keyPos = 0;
   let offset = 0;
@@ -290,7 +400,9 @@ export function createSweep({ keyFrac = 0.45, fastFrac = 0.2, lostTicks = 3 } = 
       speed = was ? 0 : speed * 0.5 + step * 0.5;
       offset = r.shift;
       state = Math.abs(step) > fastFrac * rows ? 'fast' : 'moving';
-      return { pos: keyPos + offset, state, capture: offset >= keyFrac * rows };
+      // a fast step is blurred: wait for a steady frame, unless the overlap would get too small
+      const capture = offset >= forceFrac * rows || (offset >= keyFrac * rows && state !== 'fast');
+      return { pos: keyPos + offset, state, capture };
     },
     /** The frame with these features was kept: the next ones are compared with it. */
     captured(feats: Float32Array) {
@@ -345,9 +457,9 @@ export function stripEdges(
 ): [{ x: number; y: number }, { x: number; y: number }, { x: number; y: number }, { x: number; y: number }] {
   const at = (top: number, bot: number, y: number) => top + ((bot - top) * (y / h - TOP_Y)) / (BOT_Y - TOP_Y);
   return [
-    { x: at(s.topL, s.botL, 0), y: 0 },
-    { x: at(s.topL, s.botL, h), y: h },
-    { x: at(s.topR, s.botR, h), y: h },
-    { x: at(s.topR, s.botR, 0), y: 0 },
+    { x: at(s.topL, s.botL, s.y0), y: s.y0 },
+    { x: at(s.topL, s.botL, s.y1), y: s.y1 },
+    { x: at(s.topR, s.botR, s.y1), y: s.y1 },
+    { x: at(s.topR, s.botR, s.y0), y: s.y0 },
   ];
 }

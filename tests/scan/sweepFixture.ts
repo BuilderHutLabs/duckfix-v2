@@ -18,9 +18,9 @@ function rng(seed: number) {
 
 /**
  * A long receipt (grey pixels, w × h): lines of "text" of random length. Rows repeatFrom..repeatTo
- * hold one and the same line over and over ("1 szt. x 4,99"), every 16 rows.
+ * hold one and the same line over and over ("1 szt. x 4,99"), every `pitch` rows.
  */
-export function makeReceipt(w: number, h: number, { seed = 7, repeatFrom = -1, repeatTo = -1 } = {}): Uint8ClampedArray {
+export function makeReceipt(w: number, h: number, { seed = 7, repeatFrom = -1, repeatTo = -1, pitch = 16 } = {}): Uint8ClampedArray {
   const rnd = rng(seed);
   const g = new Uint8ClampedArray(w * h).fill(PAPER);
   const line = (y: number, start: number, end: number, r: () => number) => {
@@ -30,7 +30,7 @@ export function makeReceipt(w: number, h: number, { seed = 7, repeatFrom = -1, r
   for (let y = 10; y < h - 14;) {
     if (y >= repeatFrom && y < repeatTo) {
       line(y, Math.round(w * 0.08), Math.round(w * 0.7), rng(99)); // the very same pixels every time
-      y += 16;
+      y += pitch;
       continue;
     }
     const start = Math.floor(rnd() * w * 0.3);
@@ -49,6 +49,8 @@ export type FrameOpts = {
   paperW: number;
   /** Clockwise turn of the receipt in the frame (degrees): its top leans right. */
   tiltDeg?: number;
+  /** Shadow of the phone: the frame darkens by this share from top to bottom (it stays with the camera). */
+  shade?: number;
   /** Grain (± grey levels). */
   noise?: number;
   seed?: number;
@@ -80,6 +82,7 @@ export function frameOf(rec: Uint8ClampedArray, rw: number, rh: number, o: Frame
       let v = 0;
       for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) v += at(fx + (i + 0.5) / 3, fy + (j + 0.5) / 3);
       v /= 9;
+      if (o.shade) v *= 1 - (o.shade * fy) / fh;
       if (noise) v += Math.round((rnd() * 2 - 1) * noise);
       out[fy * fw + fx] = v;
     }

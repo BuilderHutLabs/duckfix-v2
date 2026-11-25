@@ -1,4 +1,13 @@
-import { createSweep, findStrip, layoutSweep, rowFeatures, unwarpStrip, type SweepKey, type SweepState } from '../../src/scan/sweep';
+import {
+  STRIP_W,
+  createSweep,
+  findStrip,
+  layoutSweep,
+  rowFeatures,
+  unwarpStrip,
+  type SweepKey,
+  type SweepState,
+} from '../../src/scan/sweep';
 import { frameOf, makeReceipt } from './sweepFixture';
 
 const RW = 200;
@@ -29,14 +38,14 @@ describe('Paragon sweep: the receipt in the frame', () => {
     expect(findStrip(frame({ paperW: 200 }), 200, 150)).toBeNull();
   });
 
-  it('the strip is brought to 96 columns, rows scaled alike', () => {
+  it('the strip is brought to STRIP_W columns, rows scaled alike', () => {
     const g = frame();
     const u = unwarpStrip(g, 200, 150, findStrip(g, 200, 150)!);
-    expect(u.w).toBe(96);
-    expect(Math.abs(u.h - (150 * 96) / 120)).toBeLessThanOrEqual(1);
+    expect(u.w).toBe(STRIP_W);
+    expect(Math.abs(u.h - (150 * STRIP_W) / 120)).toBeLessThanOrEqual(1);
     expect(u.data.length).toBe(u.w * u.h);
     // only paper and print in it, no table: the outer columns are paper
-    for (const x of [0, 1, 94, 95]) {
+    for (const x of [0, 1, STRIP_W - 2, STRIP_W - 1]) {
       let sum = 0;
       for (let y = 0; y < u.h; y++) sum += u.data[y * u.w + x];
       expect(sum / u.h).toBeGreaterThan(200);
@@ -51,8 +60,8 @@ function featsOf(r: Uint8ClampedArray, y: number, o: Partial<Parameters<typeof f
   const u = unwarpStrip(g, 200, 150, st);
   return rowFeatures(u.data, u.w, u.h);
 }
-/** Rows of the strip per row of the receipt: 96 columns for the receipt's RW. */
-const PER_ROW = 96 / RW;
+/** Rows of the strip per row of the receipt: STRIP_W columns for the receipt's RW. */
+const PER_ROW = STRIP_W / RW;
 
 /** Runs a sweep over frames at receipt rows ys; returns the last pos, the states, and where frames were kept. */
 function run(r: Uint8ClampedArray, ys: number[], o: (y: number, i: number) => Partial<Parameters<typeof frameOf>[3]> = () => ({})) {
@@ -156,8 +165,8 @@ function sweepAndCompose(r: Uint8ClampedArray, ys: number[], o: (y: number) => P
   return { length, joins };
 }
 
-/** A join off by more than this many strip rows shows a line twice or loses one (a line is ~3.4 rows). */
-const JOIN_OK = 1.5;
+/** A join off by more than this many strip rows shows a line twice or loses one (a line of print is ~4.5 rows). */
+const JOIN_OK = 2;
 
 describe('Paragon sweep: the kept frames make one receipt', () => {
   const all = steps(0, 640, 6);
@@ -192,5 +201,77 @@ describe('Paragon sweep: the kept frames make one receipt', () => {
     const [a, b] = layoutSweep(keys);
     // the second frame starts 112 receipt rows (53.8 strip rows) below the first: the cut sits in the overlap
     expect(Math.abs(a.to - b.from - 112 * PER_ROW)).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('Paragon sweep: what a real camera adds (from the review)', () => {
+  it('blank paper under the phone shadow is still blank paper, not something that moves', () => {
+    const blank = new Uint8ClampedArray(RW * RH).fill(245);
+    const sw = createSweep();
+    const f0 = featsOf(rec, 100, { shade: 0.25 });
+    sw.push(f0);
+    sw.captured(f0);
+    const out = sw.push(featsOf(blank, 300, { shade: 0.25 }));
+    expect(out.state).toBe('blank');
+  });
+
+  it('followed under the phone shadow just as well', () => {
+    const { pos } = run(rec, steps(0, 640, 6), () => ({ shade: 0.25 }));
+    expect(Math.abs(pos - 640 * PER_ROW)).toBeLessThanOrEqual(640 * PER_ROW * 0.02);
+  });
+
+  it('lines that look alike close together, and a shaky hand (steps of 3 to 9 rows): never off by a line', () => {
+    const same = makeReceipt(RW, RH, { repeatFrom: 150, repeatTo: 790, pitch: 10 });
+    const shake = [3, 8, 5, 9, 4, 7, 3, 6, 9, 5, 4, 8];
+    const ys = [0];
+    for (let i = 0; ys.at(-1)! < 640; i++) ys.push(Math.min(640, ys.at(-1)! + shake[i % shake.length]));
+    const { pos, states } = run(same, ys);
+    expect(states).not.toContain('lost');
+    expect(Math.abs(pos - ys.at(-1)! * PER_ROW)).toBeLessThanOrEqual(ys.at(-1)! * PER_ROW * 0.02);
+  });
+
+  it('no frame is kept in a fast, blurred step: the next steady one is kept instead', () => {
+    const sw = createSweep();
+    const f0 = featsOf(rec, 0);
+    sw.push(f0);
+    sw.captured(f0);
+    sw.push(featsOf(rec, 40)); // speeding up
+    // a quick move past the keeping point
+    const fast = sw.push(featsOf(rec, 120));
+    expect(fast.state).toBe('fast');
+    expect(fast.capture).toBe(false);
+    const steady = sw.push(featsOf(rec, 123));
+    expect(steady.state).toBe('moving');
+    expect(steady.capture).toBe(true);
+  });
+});
+
+describe('Paragon sweep: the top and the end of the receipt in the frame (from the review)', () => {
+  it('the table above the receipt top: still found, starting where the paper starts', () => {
+    const g = frameOf(rec, RW, RH, { y: -40, frameW: 200, frameH: 150, paperW: 120, noise: 6 }); // top at frame row 24
+    const s = findStrip(g, 200, 150)!;
+    expect(s).not.toBeNull();
+    expect(Math.abs(s.y0 - 24)).toBeLessThanOrEqual(2);
+    expect(s.y1).toBe(150);
+    expect(Math.abs(s.topL - 40)).toBeLessThanOrEqual(2);
+    const u = unwarpStrip(g, 200, 150, s);
+    expect(Math.abs(u.h - ((150 - s.y0) * STRIP_W) / 120)).toBeLessThanOrEqual(2);
+  });
+
+  it('the receipt end in the middle of the frame: still found, ending where the paper ends', () => {
+    const g = frameOf(rec, RW, RH, { y: RH - 125, frameW: 200, frameH: 150, paperW: 120, noise: 6 }); // end at frame row 75
+    const s = findStrip(g, 200, 150)!;
+    expect(s).not.toBeNull();
+    expect(s.y0).toBe(0);
+    expect(Math.abs(s.y1 - 75)).toBeLessThanOrEqual(2);
+  });
+
+  it('from the top (table above it) down past the end (table below it): followed all the way, never lost', () => {
+    const ys = steps(-80, RH - 100, 6);
+    const { pos, states } = run(rec, ys);
+    expect(states).not.toContain('lost');
+    // the strip starts at the receipt's top until it leaves the frame: what moved is from row 0 to the last frame's top
+    const moved = ys.at(-1)! * PER_ROW;
+    expect(Math.abs(pos - moved)).toBeLessThanOrEqual(moved * 0.02);
   });
 });

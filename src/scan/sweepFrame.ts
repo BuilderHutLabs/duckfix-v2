@@ -2,12 +2,10 @@
  * "Paragon": the canvas side of the sweep. A small grey frame to follow the receipt with, a sharp
  * straightened frame kept on the way, and the kept frames put together into one tall JPEG.
  */
-import { stripTilt, type Strip } from './sweep';
+import { STRIP_W, stripTilt, type Strip } from './sweep';
 
 /** Width the receipt is brought to in the result (px): sharp enough for print, light enough for a phone. */
 const WIDTH = 1240;
-/** Columns a strip row is measured in (as in unwarpStrip): rows of the layout are in these units. */
-const STRIP_W = 96;
 /** Width of the small picture of a kept frame in the camera's strip (px). */
 const THUMB_W = 48;
 
