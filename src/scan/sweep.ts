@@ -331,3 +331,23 @@ export function layoutSweep(keys: SweepKey[]): { from: number; to: number }[] {
     to: i === keys.length - 1 ? k.rows : Math.min(k.rows, cuts[i] - at[i]),
   }));
 }
+
+/** How much the receipt leans in a frame `h` rows tall (radians, clockwise: its top to the right). */
+export function stripTilt(s: Strip, h: number): number {
+  const span = h * (BOT_Y - TOP_Y);
+  return Math.atan2((s.topL - s.botL + s.topR - s.botR) / 2, span);
+}
+
+/** The receipt's left and right edge over the whole frame (h rows): [left top, left bottom, right bottom, right top]. */
+export function stripEdges(
+  s: Strip,
+  h: number,
+): [{ x: number; y: number }, { x: number; y: number }, { x: number; y: number }, { x: number; y: number }] {
+  const at = (top: number, bot: number, y: number) => top + ((bot - top) * (y / h - TOP_Y)) / (BOT_Y - TOP_Y);
+  return [
+    { x: at(s.topL, s.botL, 0), y: 0 },
+    { x: at(s.topL, s.botL, h), y: h },
+    { x: at(s.topR, s.botR, h), y: h },
+    { x: at(s.topR, s.botR, 0), y: 0 },
+  ];
+}

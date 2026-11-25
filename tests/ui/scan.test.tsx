@@ -39,6 +39,40 @@ vi.mock('../../src/scan/receipt', async (orig) => ({
   composeReceipt: vi.fn(async () => new Blob(['long'], { type: 'image/jpeg' })),
 }));
 
+// "Paragon": what the sweep sees and decides, set by each test (the real sums are tested in tests/scan)
+const sweepCtl = vi.hoisted(() => ({
+  strip: { topL: 60, topR: 180, botL: 60, botR: 180 } as null | { topL: number; topR: number; botL: number; botR: number },
+  light: 150,
+  out: { pos: 0, state: 'moving' as 'moving' | 'fast' | 'lost' | 'blank', capture: false },
+  /** Each push keeps a frame (for the "too many frames" case). */
+  alwaysKeep: false,
+  pushes: 0,
+}));
+vi.mock('../../src/scan/sweepFrame', () => ({
+  grabGray: vi.fn(() => ({ gray: new Uint8ClampedArray(240 * 180), w: 240, h: 180, light: sweepCtl.light })),
+  cutKey: vi.fn(async () => ({ blob: new Blob(['key'], { type: 'image/jpeg' }), thumb: 'data:image/jpeg;base64,key' })),
+  composeSweep: vi.fn(async () => new Blob(['receipt'], { type: 'image/jpeg' })),
+}));
+vi.mock('../../src/scan/sweep', async (orig) => ({
+  ...(await orig<typeof import('../../src/scan/sweep')>()),
+  findStrip: vi.fn(() => sweepCtl.strip),
+  unwarpStrip: vi.fn(() => ({ data: new Uint8ClampedArray(96 * 10), w: 96, h: 10 })),
+  rowFeatures: vi.fn(() => new Float32Array(240)),
+  createSweep: vi.fn(() => {
+    let first = true;
+    return {
+      push: () => {
+        sweepCtl.pushes++;
+        const capture = first || sweepCtl.alwaysKeep || sweepCtl.out.capture;
+        first = false;
+        return { ...sweepCtl.out, capture };
+      },
+      captured: vi.fn(),
+    };
+  }),
+  layoutSweep: vi.fn((keys: { rows: number }[]) => keys.map((k) => ({ from: 0, to: k.rows }))),
+}));
+
 vi.mock('../../src/scan/card', async (orig) => ({
   ...(await orig<typeof import('../../src/scan/card')>()),
   composeIdCard: vi.fn(async () => new Blob(['a4'], { type: 'image/jpeg' })),
@@ -447,40 +481,94 @@ describe('built-in camera', () => {
     await waitFor(() => expect(vi.mocked(warp.warpToBlob).mock.calls.at(-1)![2]).toBe('auto-card'));
   });
 
-  it('"Paragon": the parts are cropped one by one and become ONE long page', async () => {
-    const receipt = await import('../../src/scan/receipt');
-    vi.mocked(receipt.composeReceipt).mockClear();
-    const deps = await openLive();
-    fireEvent.click(screen.getByRole('button', { name: strings.modeReceipt }));
-    expect(screen.getByText(strings.receiptStep(1))).toBeTruthy();
-    await shoot();
-    expect(screen.getByText(strings.receiptStep(2))).toBeTruthy();
-    await shoot();
-    await shoot();
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: strings.cameraDone(3) })));
-    await screen.findByRole('dialog', { name: strings.cropTitle });
-    expect(screen.getByText(strings.cropReceiptPart(1, 3))).toBeTruthy();
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: strings.cropNextQueued })));
-    expect(await screen.findByText(strings.cropReceiptPart(2, 3))).toBeTruthy();
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: strings.cropNextQueued })));
-    expect(await screen.findByText(strings.cropReceiptPart(3, 3))).toBeTruthy();
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: strings.cropDone })));
-    await waitFor(() => expect(deps.importFiles).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(receipt.composeReceipt).mock.calls[0][0]).toHaveLength(3);
-  });
+  describe('"Paragon": the receipt is filmed while the phone moves', () => {
+    beforeEach(() => {
+      sweepCtl.strip = { topL: 60, topR: 180, botL: 60, botR: 180 };
+      sweepCtl.light = 150;
+      sweepCtl.out = { pos: 0, state: 'moving', capture: false };
+      sweepCtl.alwaysKeep = false;
+      sweepCtl.pushes = 0;
+    });
+    const openReceipt = async () => {
+      const deps = await openLive();
+      fireEvent.click(screen.getByRole('button', { name: strings.modeReceipt }));
+      return deps;
+    };
+    const shutter = () => screen.getByRole('button', { name: new RegExp(`^(${strings.cameraShoot}|${strings.sweepStop})$`) });
 
-  it('"Paragon" with "Dodaj wszystkie": all parts at once, still one page', async () => {
-    const receipt = await import('../../src/scan/receipt');
-    vi.mocked(receipt.composeReceipt).mockClear();
-    const deps = await openLive();
-    fireEvent.click(screen.getByRole('button', { name: strings.modeReceipt }));
-    await shoot();
-    await shoot();
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: strings.cameraDone(2) })));
-    await screen.findByRole('dialog', { name: strings.cropTitle });
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: strings.cropAddAll })));
-    await waitFor(() => expect(deps.importFiles).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(receipt.composeReceipt).mock.calls[0][0]).toHaveLength(2);
+    it('aim, press: the shutter becomes "Zakończ paragon" and says to move down; no photo is taken by itself', async () => {
+      const liveFrame = await import('../../src/scan/liveFrame');
+      vi.mocked(liveFrame.analyzeFrame).mockClear();
+      frame.current = fullSheet; // a sheet held still would be taken by itself in "Auto"
+      await openReceipt();
+      expect(await screen.findByText(strings.sweepStart)).toBeTruthy();
+      await act(async () => fireEvent.click(shutter()));
+      expect(shutter().getAttribute('aria-label')).toBe(strings.sweepStop);
+      expect(await screen.findByText(strings.sweepMove)).toBeTruthy();
+      await new Promise((r) => setTimeout(r, 300));
+      expect(vi.mocked(liveFrame.analyzeFrame)).not.toHaveBeenCalled();
+      expect(screen.queryByText('1')).toBeNull(); // no photo counted
+    });
+
+    it('too fast: "Wolniej" and a short buzz; lost: "Wróć trochę wyżej"', async () => {
+      const vibrate = vi.fn();
+      Object.defineProperty(navigator, 'vibrate', { value: vibrate, configurable: true });
+      await openReceipt();
+      await act(async () => fireEvent.click(shutter()));
+      sweepCtl.out = { pos: 30, state: 'fast', capture: false };
+      expect(await screen.findByText(strings.sweepFast)).toBeTruthy();
+      expect(vibrate).toHaveBeenCalled();
+      sweepCtl.out = { pos: 30, state: 'lost', capture: false };
+      expect(await screen.findByText(strings.sweepLost)).toBeTruthy();
+    });
+
+    it('no receipt in view: says so, and nothing is followed', async () => {
+      sweepCtl.strip = null;
+      await openReceipt();
+      expect(await screen.findByText(strings.sweepNoReceipt)).toBeTruthy();
+      await act(async () => fireEvent.click(shutter()));
+      await new Promise((r) => setTimeout(r, 300));
+      expect(sweepCtl.pushes).toBe(0);
+    });
+
+    it('"Zakończ paragon": one photo; "Gotowe" and "Dodaj": one page made of the kept frames', async () => {
+      const sf = await import('../../src/scan/sweepFrame');
+      vi.mocked(sf.composeSweep).mockClear();
+      const deps = await openReceipt();
+      await act(async () => fireEvent.click(shutter()));
+      await waitFor(() => expect(sweepCtl.pushes).toBeGreaterThan(1));
+      await act(async () => fireEvent.click(shutter()));
+      expect(shutter().getAttribute('aria-label')).toBe(strings.cameraShoot);
+      expect(await screen.findByText('1')).toBeTruthy(); // one photo in the series
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: strings.cameraDone(1) })));
+      await screen.findByRole('dialog', { name: strings.cropTitle });
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: strings.cropDone })));
+      await waitFor(() => expect(deps.importFiles).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(sf.composeSweep)).toHaveBeenCalledTimes(1);
+    });
+
+    it('"Gotowe" while filming: the receipt is finished first, then the crop screen with it', async () => {
+      await openReceipt();
+      await act(async () => fireEvent.click(shutter()));
+      await waitFor(() => expect(sweepCtl.pushes).toBeGreaterThan(1));
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: strings.cameraDone(1) })));
+      expect(await screen.findByRole('dialog', { name: strings.cropTitle })).toBeTruthy();
+    });
+
+    it('the modes cannot be changed while filming', async () => {
+      await openReceipt();
+      await act(async () => fireEvent.click(shutter()));
+      expect((screen.getByRole('button', { name: strings.modeAuto }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('a very long receipt: after 30 frames the filming ends by itself and says so', async () => {
+      sweepCtl.alwaysKeep = true;
+      await openReceipt();
+      await act(async () => fireEvent.click(shutter()));
+      expect(await screen.findByText(strings.sweepFull, undefined, { timeout: 5000 })).toBeTruthy();
+      expect(shutter().getAttribute('aria-label')).toBe(strings.cameraShoot);
+      expect(await screen.findByText('1')).toBeTruthy();
+    });
   });
 
   it('a normal photo first, then "Dowód": the card still needs its own front and back; the photo stays its own page', async () => {

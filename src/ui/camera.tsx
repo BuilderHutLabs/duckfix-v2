@@ -3,6 +3,7 @@ import { useAppStore } from './store';
 import { strings } from './strings';
 import { useBackLayer } from './backStack';
 import { isWeakDevice, nextLookDelay } from './device';
+import { useReceiptSweep, type SweepResult } from './receiptSweep';
 import { storageKey } from '../config';
 import { analyzeFrame } from '../scan/liveFrame';
 import { createOutline, createSteady, quadToView, type LiveState } from '../scan/liveScan';
@@ -244,8 +245,6 @@ export function LiveCamera({
   const taken = useRef<Shot[]>([]);
   /** Photos taken in "Dowód" (the card's sides); earlier ordinary photos are not counted. */
   const cardShots = shots.filter((s) => s.card).length;
-  /** Parts of the receipt taken so far ("Paragon"). */
-  const receiptShots = shots.filter((s) => s.receipt).length;
   const modeRef = useRef<CameraMode>('auto');
   const [mode, setMode] = useState(loadMode);
   const auto = mode !== 'manual';
@@ -339,7 +338,9 @@ export function LiveCamera({
     if (finishingRef.current) return;
     finishingRef.current = true;
     setFinishing(true);
-    if (autoRef.current && liveRef.current === 'hold' && !busy.current) shootRef.current();
+    if (sweepRef.current.recording)
+      sweepRef.current.stop(); // "Gotowe" while filming a receipt: that receipt first
+    else if (autoRef.current && modeRef.current !== 'receipt' && liveRef.current === 'hold' && !busy.current) shootRef.current();
     const list = taken.current;
     const files = await Promise.all(list.map((x) => x.file));
     const kept = list
@@ -356,9 +357,33 @@ export function LiveCamera({
   const shootRef = useRef(shoot);
   shootRef.current = shoot;
 
+  /** "Paragon": a finished receipt is one photo of the series (its file is written in the background). */
+  const addReceipt = (r: SweepResult) => {
+    const shot: Shot = {
+      id: ++shotIds,
+      url: r.thumb,
+      card: false,
+      receipt: false,
+      file: r.file.then((f) => {
+        if (f) takenByHand.add(f); // the crop screen starts from the whole picture: it is cut already
+        return f;
+      }),
+      saved: false,
+    };
+    taken.current = [...taken.current, shot];
+    void shot.file.then((f) => {
+      if (!f) removeShot(shot.id);
+      else setShots((list) => list.map((x) => (x.id === shot.id ? { ...x, saved: true } : x)));
+    });
+    setShots((list) => [...list, shot]);
+  };
+  const sweep = useReceiptSweep(video, state === 'ready' && mode === 'receipt', addReceipt);
+  const sweepRef = useRef(sweep);
+  sweepRef.current = sweep;
+
   // look for the sheet a few times a second: outline, hint, and the picture taken by itself when still
   useEffect(() => {
-    if (state !== 'ready' || !auto) {
+    if (state !== 'ready' || !auto || mode === 'receipt') {
       setLive({ pts: null, state: 'none', progress: 0, hint: '' });
       return;
     }
@@ -404,7 +429,7 @@ export function LiveCamera({
       clearTimeout(t);
       look.width = 0;
     };
-  }, [state, auto]);
+  }, [state, auto, mode]);
 
   // "Dowód": after the front and the back, straight on to the crop screen
   useEffect(() => {
@@ -424,7 +449,8 @@ export function LiveCamera({
   };
 
   const close = () => {
-    if (shots.length && !window.confirm(strings.cameraDiscard(shots.length))) return false;
+    const lose = shots.length + (sweep.recording ? 1 : 0);
+    if (lose && !window.confirm(strings.cameraDiscard(lose))) return false;
     onClose();
     return true;
   };
@@ -432,6 +458,8 @@ export function LiveCamera({
 
   const last = shots.at(-1);
   const counting = live.state === 'hold' || live.state === 'ready';
+  const receipt = mode === 'receipt';
+  const hint = receipt ? sweep.hint : live.hint;
 
   return (
     <div className="live-camera" role="dialog" aria-modal="true" aria-label={strings.cameraTitle}>
@@ -443,6 +471,24 @@ export function LiveCamera({
             <path key={i} className="live-camera-corner" d={d} />
           ))}
         </svg>
+      )}
+      {receipt && sweep.edges && state === 'ready' && (
+        <svg className="live-camera-edges" aria-hidden="true">
+          <line x1={sweep.edges[0].x} y1={sweep.edges[0].y} x2={sweep.edges[1].x} y2={sweep.edges[1].y} />
+          <line x1={sweep.edges[3].x} y1={sweep.edges[3].y} x2={sweep.edges[2].x} y2={sweep.edges[2].y} />
+        </svg>
+      )}
+      {receipt && sweep.recording && (
+        <>
+          <p className="live-camera-rec" aria-hidden="true">
+            ● {Math.floor(sweep.seconds / 60)}:{String(sweep.seconds % 60).padStart(2, '0')}
+          </p>
+          <div className="live-camera-sweep" aria-hidden="true">
+            {sweep.thumbs.map((t, i) => (
+              <img key={i} src={t} alt="" />
+            ))}
+          </div>
+        </>
       )}
       {flash > 0 && <div className="live-camera-flash" key={flash} aria-hidden="true" />}
       {state === 'starting' && <p className="live-camera-msg">{strings.cameraStarting}</p>}
@@ -458,10 +504,13 @@ export function LiveCamera({
         <button type="button" className="live-camera-btn" aria-label={strings.close} onClick={close}>
           ✕
         </button>
-        {state === 'ready' && live.hint && (
-          <p className={`live-camera-hint${counting ? ' counting' : ''}`} role="status">
+        {state === 'ready' && hint && (
+          <p
+            className={`live-camera-hint${counting || (receipt && sweep.recording) ? ' counting' : ''}${receipt && sweep.warn ? ' warn' : ''}`}
+            role="status"
+          >
             <span className="live-camera-hint-dot" aria-hidden="true" />
-            {live.hint}
+            {hint}
           </p>
         )}
         <div className="live-camera-tools">
@@ -473,7 +522,6 @@ export function LiveCamera({
         </div>
       </div>
       {mode === 'card' && cardShots < 2 && <p className="live-camera-step">{cardShots === 0 ? strings.cardFront : strings.cardBack}</p>}
-      {mode === 'receipt' && <p className="live-camera-step">{strings.receiptStep(receiptShots + 1)}</p>}
       {reviewing && (
         <div className="shots-review" role="dialog" aria-modal="true" aria-label={strings.shotsTitle(shots.length)}>
           <div className="shots-review-top">
@@ -508,6 +556,7 @@ export function LiveCamera({
               key={m}
               type="button"
               aria-pressed={mode === m}
+              disabled={sweep.recording}
               onClick={() => {
                 setMode(m);
                 saveMode(m);
@@ -536,17 +585,17 @@ export function LiveCamera({
           )}
           <button
             type="button"
-            className="live-camera-shutter"
-            aria-label={strings.cameraShoot}
+            className={`live-camera-shutter${sweep.recording ? ' stop' : ''}`}
+            aria-label={sweep.recording ? strings.sweepStop : strings.cameraShoot}
             disabled={state !== 'ready'}
-            onClick={() => shoot()}
+            onClick={() => (!receipt ? shoot() : sweep.recording ? sweep.stop() : sweep.start())}
           >
             {/* the ring fills while the sheet is held still (the picture is then taken by itself) */}
             {counting && <span className="live-camera-progress" style={{ ['--p' as string]: live.progress }} aria-hidden="true" />}
           </button>
-          {shots.length ? (
+          {shots.length || sweep.recording ? (
             <button type="button" className="live-camera-done" disabled={finishing} onClick={() => void finish()}>
-              {finishing ? strings.cameraSaving : strings.cameraDone(shots.length)}
+              {finishing ? strings.cameraSaving : strings.cameraDone(shots.length + (sweep.recording ? 1 : 0))}
             </button>
           ) : (
             <span className="live-camera-side" aria-hidden="true" />
